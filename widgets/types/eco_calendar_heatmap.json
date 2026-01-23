@@ -1,0 +1,147 @@
+{
+  "fqn": "eco_custom_widgets.eco_calendar_heatmap",
+  "name": "Calendar Heatmap",
+  "deprecated": false,
+  "image": "tb-image;/api/images/system/chart.svg",
+  "description": "GitHub-style calendar heatmap showing daily values across a year. Perfect for visualizing patterns, streaks, and seasonal trends.",
+  "descriptor": {
+    "type": "timeseries",
+    "sizeX": 12,
+    "sizeY": 4,
+    "resources": [
+      {
+        "url": "https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"
+      }
+    ],
+    "templateHtml": "<div id=\"chart-container\" style=\"width: 100%; height: 100%;\"></div>",
+    "templateCss": "#chart-container { position: relative; }",
+    "controllerScript": "var chart = null;\nvar chartContainer = null;\n\nself.onInit = function() {\n    chartContainer = self.ctx.$container.find('#chart-container')[0];\n    if (!chartContainer) {\n        console.error('Chart container not found');\n        return;\n    }\n    \n    if (typeof echarts === 'undefined') {\n        console.error('ECharts not loaded');\n        return;\n    }\n    \n    chart = echarts.init(chartContainer);\n    updateChart();\n};\n\nself.onDataUpdated = function() {\n    updateChart();\n};\n\nfunction getColorScheme(scheme, minColor, maxColor) {\n    switch (scheme) {\n        case 'github':\n            return ['#ebedf0', '#9be9a8', '#40c463', '#30a14e', '#216e39'];\n        case 'blue':\n            return ['#E3F2FD', '#90CAF9', '#42A5F5', '#1E88E5', '#0D47A1'];\n        case 'green':\n            return ['#E8F5E9', '#A5D6A7', '#66BB6A', '#43A047', '#1B5E20'];\n        case 'red':\n            return ['#FFEBEE', '#EF9A9A', '#EF5350', '#E53935', '#B71C1C'];\n        case 'purple':\n            return ['#F3E5F5', '#CE93D8', '#AB47BC', '#8E24AA', '#4A148C'];\n        case 'custom':\n            return [minColor || '#ebedf0', maxColor || '#216e39'];\n        default:\n            return ['#ebedf0', '#9be9a8', '#40c463', '#30a14e', '#216e39'];\n    }\n}\n\nfunction formatDate(date) {\n    var d = new Date(date);\n    var year = d.getFullYear();\n    var month = String(d.getMonth() + 1).padStart(2, '0');\n    var day = String(d.getDate()).padStart(2, '0');\n    return year + '-' + month + '-' + day;\n}\n\nfunction updateChart() {\n    if (!chart) return;\n    \n    var settings = self.ctx.settings || {};\n    var yearDisplay = settings.yearDisplay || 'auto';\n    var customYear = settings.customYear || new Date().getFullYear();\n    var colorScheme = settings.colorScheme || 'github';\n    var minColor = settings.minColor;\n    var maxColor = settings.maxColor;\n    var cellSize = settings.cellSize || 14;\n    var showMonthLabel = settings.showMonthLabel !== false;\n    var showDayLabel = settings.showDayLabel !== false;\n    var showVisualMap = settings.showVisualMap !== false;\n    var showTooltip = settings.showTooltip !== false;\n    var enableExport = settings.enableExport !== false;\n    \n    var data = self.ctx.data || [];\n    if (!data.length || !data[0].data || !data[0].data.length) {\n        chart.setOption({\n            title: { text: 'No data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    var valueData = data[0];\n    var units = (valueData.dataKey && valueData.dataKey.units) || '';\n    \n    // Determine year to display\n    var displayYear;\n    if (yearDisplay === 'current') {\n        displayYear = new Date().getFullYear();\n    } else if (yearDisplay === 'previous') {\n        displayYear = new Date().getFullYear() - 1;\n    } else if (yearDisplay === 'custom') {\n        displayYear = customYear;\n    } else {\n        // Auto: use year from data\n        var firstTs = valueData.data[0][0];\n        displayYear = new Date(firstTs).getFullYear();\n    }\n    \n    // Aggregate data by day\n    var dailyData = {};\n    valueData.data.forEach(function(d) {\n        if (d[1] === null || d[1] === undefined || isNaN(d[1])) return;\n        var dateKey = formatDate(d[0]);\n        if (!dailyData[dateKey]) {\n            dailyData[dateKey] = { sum: 0, count: 0 };\n        }\n        dailyData[dateKey].sum += d[1];\n        dailyData[dateKey].count++;\n    });\n    \n    // Build calendar data array\n    var calendarData = [];\n    var allValues = [];\n    \n    Object.keys(dailyData).forEach(function(dateKey) {\n        var avg = dailyData[dateKey].sum / dailyData[dateKey].count;\n        calendarData.push([dateKey, avg]);\n        allValues.push(avg);\n    });\n    \n    if (calendarData.length === 0) {\n        chart.setOption({\n            title: { text: 'No valid calendar data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    var dataMin = Math.min.apply(null, allValues);\n    var dataMax = Math.max.apply(null, allValues);\n    var colorRange = getColorScheme(colorScheme, minColor, maxColor);\n    \n    // Calculate dimensions\n    var calendarRange = displayYear.toString();\n    \n    var option = {\n        tooltip: showTooltip ? {\n            formatter: function(params) {\n                return params.data[0] + '<br/>Value: ' + params.data[1].toFixed(2) + ' ' + units;\n            }\n        } : {},\n        toolbox: enableExport ? {\n            feature: {\n                saveAsImage: { title: 'Save as PNG' },\n                dataView: { title: 'Data View', readOnly: true }\n            },\n            right: 10\n        } : {},\n        visualMap: showVisualMap ? {\n            min: dataMin,\n            max: dataMax,\n            calculable: true,\n            orient: 'horizontal',\n            left: 'center',\n            bottom: 5,\n            inRange: {\n                color: colorRange\n            },\n            text: ['High', 'Low'],\n            textStyle: { fontSize: 10 }\n        } : {\n            show: false,\n            min: dataMin,\n            max: dataMax,\n            inRange: { color: colorRange }\n        },\n        calendar: {\n            top: showMonthLabel ? 40 : 20,\n            left: showDayLabel ? 50 : 30,\n            right: enableExport ? 60 : 30,\n            bottom: showVisualMap ? 60 : 20,\n            cellSize: [cellSize, cellSize],\n            range: calendarRange,\n            itemStyle: {\n                borderWidth: 0.5,\n                borderColor: '#fff'\n            },\n            yearLabel: { show: true, margin: 30 },\n            monthLabel: { show: showMonthLabel, fontSize: 10 },\n            dayLabel: { show: showDayLabel, fontSize: 10, firstDay: 1, nameMap: 'en' },\n            splitLine: {\n                show: true,\n                lineStyle: {\n                    color: '#ccc',\n                    width: 1\n                }\n            }\n        },\n        series: [{\n            type: 'heatmap',\n            coordinateSystem: 'calendar',\n            data: calendarData,\n            emphasis: {\n                itemStyle: {\n                    shadowBlur: 10,\n                    shadowColor: 'rgba(0, 0, 0, 0.5)'\n                }\n            }\n        }]\n    };\n    \n    chart.setOption(option, true);\n}\n\nself.onResize = function() {\n    if (chart) {\n        chart.resize();\n    }\n};\n\nself.onDestroy = function() {\n    if (chart) {\n        chart.dispose();\n        chart = null;\n    }\n};\n\nself.typeParameters = function() {\n    return {\n        previewWidth: '100%',\n        embedTitlePanel: true,\n        dataKeySettingsFunction: function() { return {}; },\n        defaultDataKeysFunction: function() {\n            return [{ name: 'value', label: 'Daily Value', type: 'timeseries' }];\n        }\n    };\n};\n",
+    "settingsSchema": {
+      "schema": {
+        "type": "object",
+        "title": "Calendar Heatmap Settings",
+        "properties": {
+          "yearDisplay": {
+            "title": "Year Display",
+            "type": "string",
+            "default": "auto",
+            "enum": ["auto", "current", "previous", "custom"]
+          },
+          "customYear": {
+            "title": "Custom Year",
+            "type": "number",
+            "default": 2024
+          },
+          "colorScheme": {
+            "title": "Color Scheme",
+            "type": "string",
+            "default": "github",
+            "enum": ["github", "blue", "green", "red", "purple", "custom"]
+          },
+          "minColor": {
+            "title": "Min Color (custom)",
+            "type": "string",
+            "default": "#ebedf0"
+          },
+          "maxColor": {
+            "title": "Max Color (custom)",
+            "type": "string",
+            "default": "#216e39"
+          },
+          "cellSize": {
+            "title": "Cell Size (px)",
+            "type": "number",
+            "default": 14,
+            "minimum": 8,
+            "maximum": 30
+          },
+          "showMonthLabel": {
+            "title": "Show Month Labels",
+            "type": "boolean",
+            "default": true
+          },
+          "showDayLabel": {
+            "title": "Show Day Labels",
+            "type": "boolean",
+            "default": true
+          },
+          "showVisualMap": {
+            "title": "Show Color Legend",
+            "type": "boolean",
+            "default": true
+          },
+          "showTooltip": {
+            "title": "Show Tooltip",
+            "type": "boolean",
+            "default": true
+          },
+          "enableExport": {
+            "title": "Enable Export (PNG/Data)",
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": []
+      },
+      "form": [
+        {
+          "key": "yearDisplay",
+          "type": "rc-select",
+          "multiple": false,
+          "items": [
+            { "value": "auto", "label": "Auto (from data)" },
+            { "value": "current", "label": "Current year" },
+            { "value": "previous", "label": "Previous year" },
+            { "value": "custom", "label": "Custom year" }
+          ]
+        },
+        {
+          "key": "customYear",
+          "condition": "model.yearDisplay === 'custom'"
+        },
+        {
+          "key": "colorScheme",
+          "type": "rc-select",
+          "multiple": false,
+          "items": [
+            { "value": "github", "label": "GitHub style (green)" },
+            { "value": "blue", "label": "Blue gradient" },
+            { "value": "green", "label": "Green gradient" },
+            { "value": "red", "label": "Red gradient" },
+            { "value": "purple", "label": "Purple gradient" },
+            { "value": "custom", "label": "Custom colors" }
+          ]
+        },
+        {
+          "key": "minColor",
+          "type": "color",
+          "condition": "model.colorScheme === 'custom'"
+        },
+        {
+          "key": "maxColor",
+          "type": "color",
+          "condition": "model.colorScheme === 'custom'"
+        },
+        "cellSize",
+        "showMonthLabel",
+        "showDayLabel",
+        "showVisualMap",
+        "showTooltip",
+        "enableExport"
+      ]
+    },
+    "dataKeySettingsSchema": {},
+    "latestDataKeySettingsSchema": {},
+    "defaultConfig": "{\"datasources\":[{\"type\":\"function\",\"name\":\"function\",\"dataKeys\":[{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Daily Activity\",\"color\":\"#40c463\",\"settings\":{},\"_hash\":0.1,\"funcBody\":\"var dayOfYear = Math.floor((time - new Date(new Date(time).getFullYear(), 0, 0)) / 86400000);\\nvar weekday = new Date(time).getDay();\\nvar base = Math.sin(dayOfYear / 365 * Math.PI * 4) * 5 + 10;\\nvar weekendBonus = (weekday === 0 || weekday === 6) ? -3 : 2;\\nreturn Math.max(0, base + weekendBonus + Math.random() * 8);\",\"units\":\"commits\",\"decimals\":0}]}],\"timewindow\":{\"hideInterval\":false,\"hideLastInterval\":false,\"hideQuickInterval\":false,\"hideAggregation\":false,\"hideAggInterval\":false,\"hideTimezone\":false,\"selectedTab\":1,\"history\":{\"historyType\":2,\"timewindowMs\":31536000000,\"interval\":86400000,\"fixedTimewindow\":{\"startTimeMs\":0,\"endTimeMs\":0}},\"aggregation\":{\"type\":\"AVG\",\"limit\":25000}},\"showTitle\":true,\"backgroundColor\":\"#fff\",\"color\":\"rgba(0, 0, 0, 0.87)\",\"padding\":\"8px\",\"settings\":{\"yearDisplay\":\"auto\",\"colorScheme\":\"github\",\"cellSize\":14,\"showMonthLabel\":true,\"showDayLabel\":true,\"showVisualMap\":true,\"showTooltip\":true,\"enableExport\":true},\"title\":\"Calendar Heatmap\",\"dropShadow\":true,\"enableFullscreen\":true,\"useDashboardTimewindow\":true,\"displayTimewindow\":true}"
+  },
+  "tags": [
+    "chart",
+    "timeseries",
+    "calendar",
+    "heatmap",
+    "github",
+    "daily",
+    "annual",
+    "echarts"
+  ]
+}

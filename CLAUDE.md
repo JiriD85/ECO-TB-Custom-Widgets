@@ -51,8 +51,16 @@ ECO-TB-Custom-Widgets/
 │   ├── bundles/                  # Widget bundle definitions
 │   │   └── eco_custom_widgets.json
 │   └── types/                    # Individual widget type definitions
+│       ├── eco_boxplot.json
+│       ├── eco_calendar_heatmap.json
+│       ├── eco_candlestick_basic.json
+│       ├── eco_candlestick_brush.json
+│       ├── eco_heatmap_cartesian.json
+│       ├── eco_line_confidence_band.json
 │       ├── eco_load_duration_curve.json
-│       └── eco_timeseries_zoom_sync.json
+│       ├── eco_sankey_levels.json
+│       ├── eco_timeseries_zoom_sync.json
+│       └── eco_treemap.json
 └── backups/                      # Automatic backups
 ```
 
@@ -113,6 +121,99 @@ ECO-TB-Custom-Widgets/
   - Line, bar, or area chart types
   - Optional stacking
   - Legend and tooltip customization
+
+### 3. Line with Confidence Band
+- **FQN:** `eco_custom_widgets.eco_line_confidence_band`
+- **Type:** timeseries
+- **Data Keys:** `value`, `upper`, `lower`
+- **Features:**
+  - Main line with shaded confidence band
+  - Uses stacked area technique for band visualization
+  - Zoom sync with dashboard
+  - PNG/Data export
+
+### 4. Basic Candlestick Chart
+- **FQN:** `eco_custom_widgets.eco_candlestick_basic`
+- **Type:** timeseries
+- **Data Keys:** `open`, `high`, `low`, `close`
+- **Features:**
+  - OHLC candlestick display
+  - Optional Moving Average overlay
+  - Configurable up/down colors
+  - Zoom sync support
+
+### 5. Candlestick with Brush & Volume
+- **FQN:** `eco_custom_widgets.eco_candlestick_brush`
+- **Type:** timeseries
+- **Data Keys:** `open`, `high`, `low`, `close`, `volume` (optional)
+- **Features:**
+  - Dual-grid layout (candlestick + volume)
+  - Brush selection for highlighting ranges
+  - Synchronized zoom between grids
+  - Volume bars colored by price direction
+
+### 6. Statistical Boxplot
+- **FQN:** `eco_custom_widgets.eco_boxplot`
+- **Type:** timeseries
+- **Data Keys:** `value` (raw mode) or `min`, `q1`, `median`, `q3`, `max` (precalculated)
+- **Features:**
+  - Auto-calculates quartiles from raw data
+  - Grouping by hour/day/week/month
+  - Outlier detection and display
+  - Customizable colors
+
+### 7. Heatmap Cartesian
+- **FQN:** `eco_custom_widgets.eco_heatmap_cartesian`
+- **Type:** timeseries
+- **Features:**
+  - X-Y grid heatmap with time or category axes
+  - Time grouping (hour, dayOfWeek, day, week, month)
+  - Multiple color schemes (blue, green, red, temperature)
+  - Visual map legend
+
+### 8. Calendar Heatmap
+- **FQN:** `eco_custom_widgets.eco_calendar_heatmap`
+- **Type:** timeseries
+- **Features:**
+  - GitHub-style yearly calendar view
+  - Daily value aggregation
+  - Multiple color schemes (github, blue, green, etc.)
+  - Configurable cell size
+
+### 9. Treemap
+- **FQN:** `eco_custom_widgets.eco_treemap`
+- **Type:** latest
+- **Features:**
+  - Hierarchical treemap visualization
+  - Manual mode (from datasource values)
+  - Relations mode (loads ThingsBoard entity relations)
+  - Drill-down navigation with breadcrumb
+  - Depth-based coloring
+
+### 10. Sankey Diagram with Levels
+- **FQN:** `eco_custom_widgets.eco_sankey_levels`
+- **Type:** latest
+- **Features:**
+  - Flow visualization between nodes
+  - Manual mode (source/target/value keys)
+  - Relations mode (loads entity relations)
+  - Level-based node coloring
+  - Horizontal or vertical orientation
+  - Gradient, source, or target link colors
+
+## Common Widget Settings
+
+All ECharts widgets share these settings:
+```json
+{
+  "enableZoomSync": true,        // Sync zoom with dashboard timewindow
+  "zoomSyncDebounce": 150,       // Debounce ms for zoom events
+  "showDataZoomSlider": true,    // Show zoom slider control
+  "enableExport": true,          // PNG/Data export toolbox
+  "showTooltip": true,           // Tooltip on hover
+  "showLegend": true             // Legend display
+}
+```
 
 ## Development Tips
 

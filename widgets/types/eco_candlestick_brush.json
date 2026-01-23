@@ -1,0 +1,147 @@
+{
+  "fqn": "eco_custom_widgets.eco_candlestick_brush",
+  "name": "Candlestick with Brush & Volume",
+  "deprecated": false,
+  "image": "tb-image;/api/images/system/chart.svg",
+  "description": "Advanced candlestick chart with optional volume bars and brush selection for highlighting data ranges. Dual-grid layout with synchronized zoom.",
+  "descriptor": {
+    "type": "timeseries",
+    "sizeX": 12,
+    "sizeY": 8,
+    "resources": [
+      {
+        "url": "https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"
+      }
+    ],
+    "templateHtml": "<div id=\"chart-container\" style=\"width: 100%; height: 100%;\"></div>",
+    "templateCss": "#chart-container { position: relative; }",
+    "controllerScript": "var chart = null;\nvar chartContainer = null;\nvar zoomDebounceTimer = null;\nvar isExternalUpdate = false;\n\nself.onInit = function() {\n    chartContainer = self.ctx.$container.find('#chart-container')[0];\n    if (!chartContainer) {\n        console.error('Chart container not found');\n        return;\n    }\n    \n    if (typeof echarts === 'undefined') {\n        console.error('ECharts not loaded');\n        return;\n    }\n    \n    chart = echarts.init(chartContainer);\n    \n    var settings = self.ctx.settings || {};\n    if (settings.enableZoomSync !== false) {\n        chart.on('datazoom', handleZoomSync);\n    }\n    \n    if (settings.enableBrush !== false) {\n        chart.on('brushSelected', function(params) {\n            console.log('Brush selected:', params);\n        });\n    }\n    \n    updateChart();\n};\n\nfunction handleZoomSync(params) {\n    if (isExternalUpdate) return;\n    \n    var settings = self.ctx.settings || {};\n    if (settings.enableZoomSync === false) return;\n    \n    var debounceMs = settings.zoomSyncDebounce || 150;\n    \n    if (zoomDebounceTimer) {\n        clearTimeout(zoomDebounceTimer);\n    }\n    \n    zoomDebounceTimer = setTimeout(function() {\n        var option = chart.getOption();\n        var dataZoom = option.dataZoom && option.dataZoom[0];\n        if (!dataZoom) return;\n        \n        var timeWindow = self.ctx.timeWindow;\n        if (!timeWindow) return;\n        \n        var totalRange = timeWindow.maxTime - timeWindow.minTime;\n        var startPercent = dataZoom.start || 0;\n        var endPercent = dataZoom.end || 100;\n        \n        if (startPercent > 0.5 || endPercent < 99.5) {\n            var startTime = Math.round(timeWindow.minTime + (totalRange * startPercent / 100));\n            var endTime = Math.round(timeWindow.minTime + (totalRange * endPercent / 100));\n            \n            if (self.ctx.dashboard && self.ctx.dashboard.onUpdateTimewindow) {\n                self.ctx.dashboard.onUpdateTimewindow(startTime, endTime);\n            }\n        }\n    }, debounceMs);\n}\n\nself.onDataUpdated = function() {\n    isExternalUpdate = true;\n    updateChart();\n    setTimeout(function() { isExternalUpdate = false; }, 100);\n};\n\nfunction updateChart() {\n    if (!chart) return;\n    \n    var settings = self.ctx.settings || {};\n    var upColor = settings.upColor || '#26A69A';\n    var downColor = settings.downColor || '#EF5350';\n    var showVolume = settings.showVolume !== false;\n    var volumeHeightPercent = settings.volumeHeightPercent || 20;\n    var volumeColor = settings.volumeColor || '#7B68EE';\n    var enableBrush = settings.enableBrush !== false;\n    var brushHighlightColor = settings.brushHighlightColor || 'rgba(255, 173, 51, 0.4)';\n    var showDataZoomSlider = settings.showDataZoomSlider !== false;\n    var showLegend = settings.showLegend !== false;\n    var showTooltip = settings.showTooltip !== false;\n    var enableExport = settings.enableExport !== false;\n    \n    var data = self.ctx.data || [];\n    if (!data.length) {\n        chart.setOption({\n            title: { text: 'No data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    // Find open, high, low, close, volume data keys\n    var openData = null, highData = null, lowData = null, closeData = null, volumeData = null;\n    \n    for (var i = 0; i < data.length; i++) {\n        var ds = data[i];\n        var keyName = ((ds.dataKey && ds.dataKey.name) || '').toLowerCase();\n        var keyLabel = ((ds.dataKey && ds.dataKey.label) || '').toLowerCase();\n        \n        if (keyName === 'open' || keyLabel === 'open') openData = ds;\n        else if (keyName === 'high' || keyLabel === 'high') highData = ds;\n        else if (keyName === 'low' || keyLabel === 'low') lowData = ds;\n        else if (keyName === 'close' || keyLabel === 'close') closeData = ds;\n        else if (keyName === 'volume' || keyLabel === 'volume') volumeData = ds;\n    }\n    \n    // Fallback assignment\n    if ((!openData || !highData || !lowData || !closeData) && data.length >= 4) {\n        openData = data[0];\n        highData = data[1];\n        lowData = data[2];\n        closeData = data[3];\n        if (data.length >= 5) volumeData = data[4];\n    }\n    \n    if (!openData || !closeData) {\n        chart.setOption({\n            title: { text: 'Need OHLC data keys', left: 'center', top: 'middle', textStyle: { fontSize: 12 } }\n        });\n        return;\n    }\n    \n    // Build data maps\n    var openMap = {}, highMap = {}, lowMap = {}, closeMap = {}, volumeMap = {};\n    if (openData && openData.data) openData.data.forEach(function(d) { openMap[d[0]] = d[1]; });\n    if (highData && highData.data) highData.data.forEach(function(d) { highMap[d[0]] = d[1]; });\n    if (lowData && lowData.data) lowData.data.forEach(function(d) { lowMap[d[0]] = d[1]; });\n    if (closeData && closeData.data) closeData.data.forEach(function(d) { closeMap[d[0]] = d[1]; });\n    if (volumeData && volumeData.data) volumeData.data.forEach(function(d) { volumeMap[d[0]] = d[1]; });\n    \n    // Get all unique timestamps\n    var timestamps = {};\n    [openData, highData, lowData, closeData, volumeData].forEach(function(ds) {\n        if (ds && ds.data) {\n            ds.data.forEach(function(d) { timestamps[d[0]] = true; });\n        }\n    });\n    \n    var sortedTimestamps = Object.keys(timestamps).map(Number).sort(function(a, b) { return a - b; });\n    \n    var categoryData = [];\n    var candleData = [];\n    var volData = [];\n    \n    sortedTimestamps.forEach(function(ts) {\n        var o = openMap[ts], h = highMap[ts], l = lowMap[ts], c = closeMap[ts], v = volumeMap[ts];\n        if (o !== undefined && c !== undefined) {\n            h = h !== undefined ? h : Math.max(o, c);\n            l = l !== undefined ? l : Math.min(o, c);\n            categoryData.push(new Date(ts).toLocaleString());\n            candleData.push([o, c, l, h]);\n            volData.push(v !== undefined ? v : 0);\n        }\n    });\n    \n    if (candleData.length === 0) {\n        chart.setOption({\n            title: { text: 'No valid OHLC data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    var hasVolume = showVolume && volumeData;\n    var candleGridHeight = hasVolume ? (100 - volumeHeightPercent - 15) + '%' : '70%';\n    var volumeGridTop = hasVolume ? (85 - volumeHeightPercent) + '%' : '85%';\n    \n    var grids = [{\n        left: 60,\n        right: enableExport ? 80 : 30,\n        top: showLegend ? 40 : 20,\n        height: candleGridHeight\n    }];\n    \n    var xAxes = [{\n        type: 'category',\n        data: categoryData,\n        gridIndex: 0,\n        axisLabel: { fontSize: 9, show: !hasVolume },\n        splitLine: { show: false },\n        axisLine: { onZero: false }\n    }];\n    \n    var yAxes = [{\n        type: 'value',\n        scale: true,\n        gridIndex: 0,\n        axisLabel: { fontSize: 10 },\n        splitLine: { lineStyle: { type: 'dashed', opacity: 0.3 } }\n    }];\n    \n    var series = [{\n        name: 'Candlestick',\n        type: 'candlestick',\n        data: candleData,\n        xAxisIndex: 0,\n        yAxisIndex: 0,\n        itemStyle: {\n            color: upColor,\n            color0: downColor,\n            borderColor: upColor,\n            borderColor0: downColor\n        }\n    }];\n    \n    var legendData = ['Candlestick'];\n    \n    if (hasVolume) {\n        grids.push({\n            left: 60,\n            right: enableExport ? 80 : 30,\n            top: volumeGridTop,\n            height: volumeHeightPercent + '%'\n        });\n        \n        xAxes.push({\n            type: 'category',\n            data: categoryData,\n            gridIndex: 1,\n            axisLabel: { fontSize: 9, rotate: 30 },\n            splitLine: { show: false }\n        });\n        \n        yAxes.push({\n            type: 'value',\n            gridIndex: 1,\n            axisLabel: { fontSize: 9 },\n            splitLine: { show: false }\n        });\n        \n        // Color volume bars based on price direction\n        var volumeItemStyle = volData.map(function(v, i) {\n            var isUp = candleData[i][1] >= candleData[i][0]; // close >= open\n            return isUp ? upColor : downColor;\n        });\n        \n        series.push({\n            name: 'Volume',\n            type: 'bar',\n            data: volData.map(function(v, i) {\n                return {\n                    value: v,\n                    itemStyle: { color: volumeItemStyle[i], opacity: 0.6 }\n                };\n            }),\n            xAxisIndex: 1,\n            yAxisIndex: 1\n        });\n        \n        legendData.push('Volume');\n    }\n    \n    var dataZoom = [\n        { type: 'inside', xAxisIndex: hasVolume ? [0, 1] : [0] }\n    ];\n    \n    if (showDataZoomSlider) {\n        dataZoom.push({\n            type: 'slider',\n            xAxisIndex: hasVolume ? [0, 1] : [0],\n            bottom: 5,\n            height: 20\n        });\n    }\n    \n    var option = {\n        tooltip: showTooltip ? {\n            trigger: 'axis',\n            axisPointer: { type: 'cross' },\n            formatter: function(params) {\n                if (!params || !params.length) return '';\n                var result = params[0].axisValue + '<br/>';\n                for (var i = 0; i < params.length; i++) {\n                    var p = params[i];\n                    if (p.seriesType === 'candlestick' && p.data) {\n                        result += 'Open: ' + p.data[1] + '<br/>';\n                        result += 'Close: ' + p.data[2] + '<br/>';\n                        result += 'Low: ' + p.data[3] + '<br/>';\n                        result += 'High: ' + p.data[4] + '<br/>';\n                    } else if (p.seriesType === 'bar') {\n                        var val = typeof p.data === 'object' ? p.data.value : p.data;\n                        result += 'Volume: ' + val + '<br/>';\n                    }\n                }\n                return result;\n            }\n        } : {},\n        legend: showLegend ? {\n            data: legendData,\n            top: 5\n        } : {},\n        toolbox: enableExport ? {\n            feature: {\n                saveAsImage: { title: 'Save as PNG' },\n                dataView: { title: 'Data View', readOnly: true },\n                brush: enableBrush ? { title: { lineX: 'Brush X', clear: 'Clear' } } : undefined\n            },\n            right: 10\n        } : {},\n        brush: enableBrush ? {\n            toolbox: ['lineX', 'clear'],\n            brushStyle: {\n                color: brushHighlightColor\n            },\n            xAxisIndex: hasVolume ? [0, 1] : [0],\n            outOfBrush: {\n                colorAlpha: 0.3\n            }\n        } : undefined,\n        grid: grids,\n        xAxis: xAxes,\n        yAxis: yAxes,\n        dataZoom: dataZoom,\n        series: series\n    };\n    \n    chart.setOption(option, true);\n}\n\nself.onResize = function() {\n    if (chart) {\n        chart.resize();\n    }\n};\n\nself.onDestroy = function() {\n    if (chart) {\n        chart.off('datazoom');\n        chart.off('brushSelected');\n        chart.dispose();\n        chart = null;\n    }\n    if (zoomDebounceTimer) {\n        clearTimeout(zoomDebounceTimer);\n    }\n};\n\nself.typeParameters = function() {\n    return {\n        previewWidth: '100%',\n        embedTitlePanel: true,\n        dataKeySettingsFunction: function() { return {}; },\n        defaultDataKeysFunction: function() {\n            return [\n                { name: 'open', label: 'Open', type: 'timeseries' },\n                { name: 'high', label: 'High', type: 'timeseries' },\n                { name: 'low', label: 'Low', type: 'timeseries' },\n                { name: 'close', label: 'Close', type: 'timeseries' },\n                { name: 'volume', label: 'Volume', type: 'timeseries' }\n            ];\n        }\n    };\n};\n",
+    "settingsSchema": {
+      "schema": {
+        "type": "object",
+        "title": "Candlestick Brush Settings",
+        "properties": {
+          "enableZoomSync": {
+            "title": "Enable Zoom Sync",
+            "type": "boolean",
+            "default": true
+          },
+          "zoomSyncDebounce": {
+            "title": "Zoom Sync Debounce (ms)",
+            "type": "number",
+            "default": 150,
+            "minimum": 50,
+            "maximum": 500
+          },
+          "showDataZoomSlider": {
+            "title": "Show Zoom Slider",
+            "type": "boolean",
+            "default": true
+          },
+          "upColor": {
+            "title": "Up Color (bullish)",
+            "type": "string",
+            "default": "#26A69A"
+          },
+          "downColor": {
+            "title": "Down Color (bearish)",
+            "type": "string",
+            "default": "#EF5350"
+          },
+          "showVolume": {
+            "title": "Show Volume Bars",
+            "type": "boolean",
+            "default": true
+          },
+          "volumeHeightPercent": {
+            "title": "Volume Height (%)",
+            "type": "number",
+            "default": 20,
+            "minimum": 10,
+            "maximum": 40
+          },
+          "volumeColor": {
+            "title": "Volume Bar Color",
+            "type": "string",
+            "default": "#7B68EE"
+          },
+          "enableBrush": {
+            "title": "Enable Brush Selection",
+            "type": "boolean",
+            "default": true
+          },
+          "brushHighlightColor": {
+            "title": "Brush Highlight Color",
+            "type": "string",
+            "default": "rgba(255, 173, 51, 0.4)"
+          },
+          "showLegend": {
+            "title": "Show Legend",
+            "type": "boolean",
+            "default": true
+          },
+          "showTooltip": {
+            "title": "Show Tooltip",
+            "type": "boolean",
+            "default": true
+          },
+          "enableExport": {
+            "title": "Enable Export (PNG/Data)",
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": []
+      },
+      "form": [
+        "enableZoomSync",
+        {
+          "key": "zoomSyncDebounce",
+          "condition": "model.enableZoomSync === true"
+        },
+        "showDataZoomSlider",
+        {
+          "key": "upColor",
+          "type": "color"
+        },
+        {
+          "key": "downColor",
+          "type": "color"
+        },
+        "showVolume",
+        {
+          "key": "volumeHeightPercent",
+          "condition": "model.showVolume === true"
+        },
+        {
+          "key": "volumeColor",
+          "type": "color",
+          "condition": "model.showVolume === true"
+        },
+        "enableBrush",
+        {
+          "key": "brushHighlightColor",
+          "type": "color",
+          "condition": "model.enableBrush === true"
+        },
+        "showLegend",
+        "showTooltip",
+        "enableExport"
+      ]
+    },
+    "dataKeySettingsSchema": {},
+    "latestDataKeySettingsSchema": {},
+    "defaultConfig": "{\"datasources\":[{\"type\":\"function\",\"name\":\"function\",\"dataKeys\":[{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Open\",\"color\":\"#2196f3\",\"settings\":{},\"_hash\":0.1,\"funcBody\":\"var base = 100 + Math.sin(time / 7200000) * 20;\\nreturn base + Math.random() * 5;\",\"units\":\"\",\"decimals\":2},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"High\",\"color\":\"#4CAF50\",\"settings\":{},\"_hash\":0.2,\"funcBody\":\"var base = 100 + Math.sin(time / 7200000) * 20;\\nreturn base + 5 + Math.random() * 10;\",\"units\":\"\",\"decimals\":2},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Low\",\"color\":\"#F44336\",\"settings\":{},\"_hash\":0.3,\"funcBody\":\"var base = 100 + Math.sin(time / 7200000) * 20;\\nreturn base - 5 - Math.random() * 10;\",\"units\":\"\",\"decimals\":2},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Close\",\"color\":\"#FF9800\",\"settings\":{},\"_hash\":0.4,\"funcBody\":\"var base = 100 + Math.sin(time / 7200000) * 20;\\nreturn base + Math.random() * 8 - 4;\",\"units\":\"\",\"decimals\":2},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Volume\",\"color\":\"#7B68EE\",\"settings\":{},\"_hash\":0.5,\"funcBody\":\"return Math.floor(Math.random() * 10000) + 1000;\",\"units\":\"\",\"decimals\":0}]}],\"timewindow\":{\"hideInterval\":false,\"hideLastInterval\":false,\"hideQuickInterval\":false,\"hideAggregation\":false,\"hideAggInterval\":false,\"hideTimezone\":false,\"selectedTab\":0,\"realtime\":{\"realtimeType\":0,\"timewindowMs\":86400000,\"quickInterval\":\"CURRENT_DAY\",\"interval\":3600000},\"aggregation\":{\"type\":\"AVG\",\"limit\":25000}},\"showTitle\":true,\"backgroundColor\":\"#fff\",\"color\":\"rgba(0, 0, 0, 0.87)\",\"padding\":\"8px\",\"settings\":{\"enableZoomSync\":true,\"zoomSyncDebounce\":150,\"showDataZoomSlider\":true,\"upColor\":\"#26A69A\",\"downColor\":\"#EF5350\",\"showVolume\":true,\"volumeHeightPercent\":20,\"volumeColor\":\"#7B68EE\",\"enableBrush\":true,\"brushHighlightColor\":\"rgba(255, 173, 51, 0.4)\",\"showLegend\":true,\"showTooltip\":true,\"enableExport\":true},\"title\":\"Candlestick with Brush & Volume\",\"dropShadow\":true,\"enableFullscreen\":true,\"useDashboardTimewindow\":true,\"displayTimewindow\":true}"
+  },
+  "tags": [
+    "chart",
+    "timeseries",
+    "candlestick",
+    "ohlc",
+    "volume",
+    "brush",
+    "selection",
+    "financial",
+    "echarts"
+  ]
+}
