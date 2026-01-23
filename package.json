@@ -1,0 +1,29 @@
+{
+  "name": "eco-tb-custom-widgets",
+  "version": "1.0.0",
+  "description": "Custom ThingsBoard Widget Library for ECO Smart Diagnostics",
+  "main": "sync/sync.js",
+  "scripts": {
+    "sync": "node sync/sync.js sync --widgets",
+    "list-bundles": "node sync/sync.js list-bundles",
+    "list-widget-types": "node sync/sync.js list-widget-types",
+    "pull-bundle": "node sync/sync.js pull-bundle",
+    "backup": "node sync/sync.js backup",
+    "rollback": "node sync/sync.js rollback",
+    "status": "node sync/sync.js status"
+  },
+  "keywords": [
+    "thingsboard",
+    "widgets",
+    "echarts",
+    "timeseries"
+  ],
+  "author": "",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "dotenv": "^16.3.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

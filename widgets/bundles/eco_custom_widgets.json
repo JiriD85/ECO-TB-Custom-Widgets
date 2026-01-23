@@ -1,0 +1,7 @@
+{
+  "alias": "eco_custom_widgets",
+  "title": "ECO Custom Widgets",
+  "description": "Custom widgets for ECO Smart Diagnostics - includes Load Duration Curve chart and Synchronized Zoom Time Series",
+  "image": null,
+  "order": 0
+}

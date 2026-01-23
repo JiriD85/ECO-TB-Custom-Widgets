@@ -1,0 +1,130 @@
+{
+  "fqn": "eco_custom_widgets.eco_load_duration_curve",
+  "name": "Load Duration Curve (Dauerkennlinie)",
+  "deprecated": false,
+  "image": "tb-image;/api/images/system/chart.svg",
+  "description": "Displays load data as a duration curve (Dauerkennlinie) with automatic threshold detection for base load and peak load. Supports split view with original time series above and duration curve below.",
+  "descriptor": {
+    "type": "timeseries",
+    "sizeX": 12,
+    "sizeY": 8,
+    "resources": [
+      {
+        "url": "https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"
+      }
+    ],
+    "templateHtml": "<div id=\"chart-container\" style=\"width: 100%; height: 100%;\"></div>",
+    "templateCss": "#chart-container { position: relative; }",
+    "controllerScript": "var chart = null;\nvar chartContainer = null;\n\nself.onInit = function() {\n    chartContainer = self.ctx.$container.find('#chart-container')[0];\n    if (!chartContainer) {\n        console.error('Chart container not found');\n        return;\n    }\n    \n    // Wait for ECharts to load\n    if (typeof echarts === 'undefined') {\n        console.error('ECharts not loaded');\n        return;\n    }\n    \n    chart = echarts.init(chartContainer);\n    updateChart();\n};\n\nself.onDataUpdated = function() {\n    updateChart();\n};\n\nfunction updateChart() {\n    if (!chart) return;\n    \n    var settings = self.ctx.settings || {};\n    var displayMode = settings.displayMode || 'durationCurveOnly';\n    var autoDetect = settings.autoDetectThresholds !== false;\n    var baseLoadPercentile = settings.baseLoadPercentile || 10;\n    var peakLoadPercentile = settings.peakLoadPercentile || 95;\n    var manualBaseLoad = settings.manualBaseLoad;\n    var manualPeakLoad = settings.manualPeakLoad;\n    var baseLoadColor = settings.baseLoadColor || '#4CAF50';\n    var peakLoadColor = settings.peakLoadColor || '#F44336';\n    var showThresholdLabels = settings.showThresholdLabels !== false;\n    var enableExport = settings.enableExport !== false;\n    \n    // Get data from datasources\n    var data = self.ctx.data || [];\n    if (!data.length || !data[0].data || !data[0].data.length) {\n        chart.setOption({\n            title: { text: 'No data available', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    var seriesData = data[0].data;\n    var dataKey = data[0].dataKey || {};\n    var label = dataKey.label || dataKey.name || 'Value';\n    var units = dataKey.units || self.ctx.units || '';\n    var color = dataKey.color || '#2196F3';\n    \n    // Extract values and timestamps\n    var values = seriesData.map(function(d) { return d[1]; }).filter(function(v) { return v !== null && !isNaN(v); });\n    var timestamps = seriesData.map(function(d) { return d[0]; });\n    \n    if (values.length === 0) {\n        chart.setOption({\n            title: { text: 'No valid data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    // Sort values descending for duration curve\n    var sortedValues = values.slice().sort(function(a, b) { return b - a; });\n    \n    // Calculate percentages for x-axis (0% to 100%)\n    var durationData = sortedValues.map(function(v, i) {\n        return [Math.round((i / (sortedValues.length - 1)) * 100 * 10) / 10, v];\n    });\n    \n    // Calculate thresholds\n    var baseLoadValue, peakLoadValue;\n    if (autoDetect && manualBaseLoad === null) {\n        var baseIdx = Math.floor(sortedValues.length * (1 - baseLoadPercentile / 100));\n        baseLoadValue = sortedValues[Math.min(baseIdx, sortedValues.length - 1)];\n    } else if (manualBaseLoad !== null && manualBaseLoad !== undefined) {\n        baseLoadValue = manualBaseLoad;\n    }\n    \n    if (autoDetect && manualPeakLoad === null) {\n        var peakIdx = Math.floor(sortedValues.length * (1 - peakLoadPercentile / 100));\n        peakLoadValue = sortedValues[Math.max(0, peakIdx)];\n    } else if (manualPeakLoad !== null && manualPeakLoad !== undefined) {\n        peakLoadValue = manualPeakLoad;\n    }\n    \n    // Build option based on display mode\n    var option;\n    \n    if (displayMode === 'splitView') {\n        // Split view: Time series on top, Duration curve below\n        var timeSeriesData = seriesData.map(function(d) { return [d[0], d[1]]; });\n        \n        option = {\n            grid: [\n                { left: 60, right: 40, top: 40, height: '35%' },\n                { left: 60, right: 40, top: '55%', height: '35%' }\n            ],\n            title: [\n                { text: label + ' - Time Series', left: 'center', top: 5, textStyle: { fontSize: 14 } },\n                { text: 'Duration Curve (Dauerkennlinie)', left: 'center', top: '50%', textStyle: { fontSize: 14 } }\n            ],\n            tooltip: {\n                trigger: 'axis',\n                formatter: function(params) {\n                    if (params[0].axisIndex === 0) {\n                        var d = new Date(params[0].value[0]);\n                        return d.toLocaleString() + '<br/>' + label + ': ' + params[0].value[1].toFixed(2) + ' ' + units;\n                    } else {\n                        return params[0].value[0] + '% of time<br/>' + label + ': ' + params[0].value[1].toFixed(2) + ' ' + units;\n                    }\n                }\n            },\n            toolbox: enableExport ? {\n                feature: {\n                    saveAsImage: { title: 'Save as PNG' },\n                    dataView: { title: 'Data View', readOnly: true }\n                },\n                right: 10\n            } : {},\n            xAxis: [\n                {\n                    type: 'time',\n                    gridIndex: 0,\n                    axisLabel: { fontSize: 10 }\n                },\n                {\n                    type: 'value',\n                    gridIndex: 1,\n                    name: '% of Time',\n                    nameLocation: 'middle',\n                    nameGap: 25,\n                    min: 0,\n                    max: 100,\n                    axisLabel: { formatter: '{value}%', fontSize: 10 }\n                }\n            ],\n            yAxis: [\n                {\n                    type: 'value',\n                    gridIndex: 0,\n                    name: units,\n                    axisLabel: { fontSize: 10 }\n                },\n                {\n                    type: 'value',\n                    gridIndex: 1,\n                    name: units,\n                    axisLabel: { fontSize: 10 }\n                }\n            ],\n            dataZoom: [\n                { type: 'inside', xAxisIndex: [0, 1] },\n                { type: 'slider', xAxisIndex: [0, 1], bottom: 5, height: 20 }\n            ],\n            series: [\n                {\n                    name: label,\n                    type: 'line',\n                    xAxisIndex: 0,\n                    yAxisIndex: 0,\n                    data: timeSeriesData,\n                    smooth: true,\n                    symbol: 'none',\n                    lineStyle: { color: color, width: 1.5 },\n                    areaStyle: { color: color, opacity: 0.1 }\n                },\n                {\n                    name: 'Duration Curve',\n                    type: 'line',\n                    xAxisIndex: 1,\n                    yAxisIndex: 1,\n                    data: durationData,\n                    smooth: true,\n                    symbol: 'none',\n                    lineStyle: { color: color, width: 2 },\n                    areaStyle: { color: color, opacity: 0.2 },\n                    markLine: {\n                        silent: true,\n                        lineStyle: { type: 'dashed' },\n                        label: { show: showThresholdLabels, position: 'end', fontSize: 10 },\n                        data: [\n                            baseLoadValue !== undefined ? { yAxis: baseLoadValue, lineStyle: { color: baseLoadColor }, label: { formatter: 'Base: ' + baseLoadValue.toFixed(1) + ' ' + units } } : null,\n                            peakLoadValue !== undefined ? { yAxis: peakLoadValue, lineStyle: { color: peakLoadColor }, label: { formatter: 'Peak: ' + peakLoadValue.toFixed(1) + ' ' + units } } : null\n                        ].filter(function(x) { return x !== null; })\n                    }\n                }\n            ]\n        };\n    } else {\n        // Duration curve only (default)\n        option = {\n            title: {\n                text: 'Duration Curve - ' + label,\n                left: 'center',\n                textStyle: { fontSize: 14 }\n            },\n            tooltip: {\n                trigger: 'axis',\n                formatter: function(params) {\n                    return params[0].value[0] + '% of time exceeded<br/>' + label + ': ' + params[0].value[1].toFixed(2) + ' ' + units;\n                }\n            },\n            toolbox: enableExport ? {\n                feature: {\n                    saveAsImage: { title: 'Save as PNG' },\n                    dataView: { title: 'Data View', readOnly: true }\n                },\n                right: 10\n            } : {},\n            grid: {\n                left: 60,\n                right: 40,\n                top: 50,\n                bottom: 60\n            },\n            xAxis: {\n                type: 'value',\n                name: '% of Time',\n                nameLocation: 'middle',\n                nameGap: 30,\n                min: 0,\n                max: 100,\n                axisLabel: { formatter: '{value}%' }\n            },\n            yAxis: {\n                type: 'value',\n                name: units,\n                nameLocation: 'middle',\n                nameGap: 40\n            },\n            dataZoom: [\n                { type: 'inside' },\n                { type: 'slider', bottom: 10, height: 20 }\n            ],\n            series: [{\n                name: label,\n                type: 'line',\n                data: durationData,\n                smooth: true,\n                symbol: 'none',\n                lineStyle: { color: color, width: 2 },\n                areaStyle: {\n                    color: {\n                        type: 'linear',\n                        x: 0, y: 0, x2: 0, y2: 1,\n                        colorStops: [\n                            { offset: 0, color: color },\n                            { offset: 1, color: 'rgba(255,255,255,0.2)' }\n                        ]\n                    }\n                },\n                markLine: {\n                    silent: true,\n                    lineStyle: { type: 'dashed', width: 2 },\n                    label: { show: showThresholdLabels, position: 'end' },\n                    data: [\n                        baseLoadValue !== undefined ? {\n                            yAxis: baseLoadValue,\n                            lineStyle: { color: baseLoadColor },\n                            label: { formatter: 'Base Load: ' + baseLoadValue.toFixed(1) + ' ' + units, color: baseLoadColor }\n                        } : null,\n                        peakLoadValue !== undefined ? {\n                            yAxis: peakLoadValue,\n                            lineStyle: { color: peakLoadColor },\n                            label: { formatter: 'Peak Load: ' + peakLoadValue.toFixed(1) + ' ' + units, color: peakLoadColor }\n                        } : null\n                    ].filter(function(x) { return x !== null; })\n                },\n                markArea: {\n                    silent: true,\n                    data: [\n                        baseLoadValue !== undefined ? [{\n                            yAxis: 0,\n                            itemStyle: { color: baseLoadColor, opacity: 0.05 }\n                        }, {\n                            yAxis: baseLoadValue\n                        }] : null,\n                        peakLoadValue !== undefined ? [{\n                            yAxis: peakLoadValue,\n                            itemStyle: { color: peakLoadColor, opacity: 0.05 }\n                        }, {\n                            yAxis: Math.max.apply(null, sortedValues) * 1.1\n                        }] : null\n                    ].filter(function(x) { return x !== null; })\n                }\n            }]\n        };\n    }\n    \n    chart.setOption(option, true);\n}\n\nself.onResize = function() {\n    if (chart) {\n        chart.resize();\n    }\n};\n\nself.onDestroy = function() {\n    if (chart) {\n        chart.dispose();\n        chart = null;\n    }\n};\n\nself.typeParameters = function() {\n    return {\n        previewWidth: '100%',\n        embedTitlePanel: false,\n        dataKeySettingsFunction: function() { return {}; },\n        defaultDataKeysFunction: function() {\n            return [{ name: 'power', label: 'Power', type: 'timeseries', units: 'kW', decimals: 2 }];\n        }\n    };\n};\n",
+    "settingsSchema": {
+      "schema": {
+        "type": "object",
+        "title": "Load Duration Curve Settings",
+        "properties": {
+          "displayMode": {
+            "title": "Display Mode",
+            "type": "string",
+            "default": "durationCurveOnly",
+            "enum": ["durationCurveOnly", "splitView"]
+          },
+          "autoDetectThresholds": {
+            "title": "Auto-detect Thresholds",
+            "type": "boolean",
+            "default": true
+          },
+          "baseLoadPercentile": {
+            "title": "Base Load Percentile",
+            "type": "number",
+            "default": 10,
+            "minimum": 1,
+            "maximum": 50
+          },
+          "peakLoadPercentile": {
+            "title": "Peak Load Percentile",
+            "type": "number",
+            "default": 95,
+            "minimum": 50,
+            "maximum": 99
+          },
+          "manualBaseLoad": {
+            "title": "Manual Base Load Value",
+            "type": "number",
+            "default": null
+          },
+          "manualPeakLoad": {
+            "title": "Manual Peak Load Value",
+            "type": "number",
+            "default": null
+          },
+          "baseLoadColor": {
+            "title": "Base Load Color",
+            "type": "string",
+            "default": "#4CAF50"
+          },
+          "peakLoadColor": {
+            "title": "Peak Load Color",
+            "type": "string",
+            "default": "#F44336"
+          },
+          "showThresholdLabels": {
+            "title": "Show Threshold Labels",
+            "type": "boolean",
+            "default": true
+          },
+          "enableExport": {
+            "title": "Enable Export (PNG/Data)",
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": []
+      },
+      "form": [
+        {
+          "key": "displayMode",
+          "type": "rc-select",
+          "multiple": false,
+          "items": [
+            { "value": "durationCurveOnly", "label": "Duration Curve Only" },
+            { "value": "splitView", "label": "Split View (Time Series + Duration Curve)" }
+          ]
+        },
+        "autoDetectThresholds",
+        {
+          "key": "baseLoadPercentile",
+          "condition": "model.autoDetectThresholds === true"
+        },
+        {
+          "key": "peakLoadPercentile",
+          "condition": "model.autoDetectThresholds === true"
+        },
+        {
+          "key": "manualBaseLoad",
+          "condition": "model.autoDetectThresholds === false"
+        },
+        {
+          "key": "manualPeakLoad",
+          "condition": "model.autoDetectThresholds === false"
+        },
+        "baseLoadColor",
+        "peakLoadColor",
+        "showThresholdLabels",
+        "enableExport"
+      ]
+    },
+    "dataKeySettingsSchema": {},
+    "latestDataKeySettingsSchema": {},
+    "defaultConfig": "{\"datasources\":[{\"type\":\"function\",\"name\":\"function\",\"dataKeys\":[{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Power\",\"color\":\"#2196f3\",\"settings\":{},\"_hash\":0.123,\"funcBody\":\"var baseValue = 50;\\nvar variation = Math.sin(time / 3600000) * 20;\\nvar noise = Math.random() * 10 - 5;\\nvar spike = Math.random() > 0.95 ? 30 : 0;\\nreturn Math.max(0, baseValue + variation + noise + spike);\",\"units\":\"kW\",\"decimals\":2}]}],\"timewindow\":{\"hideInterval\":false,\"hideLastInterval\":false,\"hideQuickInterval\":false,\"hideAggregation\":false,\"hideAggInterval\":false,\"hideTimezone\":false,\"selectedTab\":0,\"realtime\":{\"realtimeType\":0,\"timewindowMs\":86400000,\"quickInterval\":\"CURRENT_DAY\",\"interval\":60000},\"aggregation\":{\"type\":\"AVG\",\"limit\":25000}},\"showTitle\":true,\"backgroundColor\":\"#fff\",\"color\":\"rgba(0, 0, 0, 0.87)\",\"padding\":\"8px\",\"settings\":{\"displayMode\":\"durationCurveOnly\",\"autoDetectThresholds\":true,\"baseLoadPercentile\":10,\"peakLoadPercentile\":95,\"manualBaseLoad\":null,\"manualPeakLoad\":null,\"baseLoadColor\":\"#4CAF50\",\"peakLoadColor\":\"#F44336\",\"showThresholdLabels\":true,\"enableExport\":true},\"title\":\"Load Duration Curve\",\"dropShadow\":true,\"enableFullscreen\":true,\"useDashboardTimewindow\":true,\"displayTimewindow\":true}"
+  },
+  "tags": [
+    "chart",
+    "timeseries",
+    "duration curve",
+    "dauerkennlinie",
+    "load",
+    "power",
+    "energy",
+    "threshold",
+    "echarts"
+  ]
+}
