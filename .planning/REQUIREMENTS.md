@@ -55,13 +55,13 @@ Which phases cover which requirements.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| LDC-01 | — | Complete |
-| LDC-02 | — | Complete |
-| LDC-03 | — | Complete |
-| LDC-04 | — | Complete |
-| LDC-05 | — | Complete |
-| LDC-06 | — | Complete |
-| LDC-07 | — | Complete |
+| LDC-01 | Pre-GSD | Complete |
+| LDC-02 | Pre-GSD | Complete |
+| LDC-03 | Pre-GSD | Complete |
+| LDC-04 | Pre-GSD | Complete |
+| LDC-05 | Pre-GSD | Complete |
+| LDC-06 | Pre-GSD | Complete |
+| LDC-07 | Pre-GSD | Complete |
 | PLAT-01 | Phase 1 | Pending |
 | PLAT-02 | Phase 1 | Pending |
 | PLAT-03 | Phase 1 | Pending |
@@ -70,8 +70,8 @@ Which phases cover which requirements.
 
 **Coverage:**
 - v1 requirements: 12 total
-- Implemented: 7
-- Active: 5
+- Implemented (Pre-GSD): 7
+- Active: 5 (mapped to Phases 1-2)
 - Unmapped: 0 ✓
 
 ---
