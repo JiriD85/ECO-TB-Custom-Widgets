@@ -1,9 +1,9 @@
 {
   "fqn": "eco_custom_widgets.eco_timeseries_zoom_sync",
-  "name": "Synced Zoom Time Series",
+  "name": "ECO Timeseries Zoom Sync",
   "deprecated": false,
   "image": "tb-image;/api/images/system/chart.svg",
-  "description": "Time series chart with synchronized zoom. When you zoom on this chart, all widgets using dashboard timewindow zoom together. Supports line, bar, and area chart types.",
+  "description": "Time series visualization with configurable chart types (line, bar, area, scatter), multi-series support, dual Y-axes, statistics cards, and internal zoom. Reference implementation for ECO Custom Widgets.",
   "descriptor": {
     "type": "timeseries",
     "sizeX": 8,
@@ -13,36 +13,19 @@
         "url": "https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"
       }
     ],
-    "templateHtml": "<div id=\"sync-chart-container\" style=\"width: 100%; height: 100%;\"></div>",
-    "templateCss": "#sync-chart-container { position: relative; }",
-    "controllerScript": "var chart = null;\nvar chartContainer = null;\nvar zoomDebounceTimer = null;\nvar isExternalUpdate = false;\n\nself.onInit = function() {\n    chartContainer = self.ctx.$container.find('#sync-chart-container')[0];\n    if (!chartContainer) {\n        console.error('Chart container not found');\n        return;\n    }\n    \n    if (typeof echarts === 'undefined') {\n        console.error('ECharts not loaded');\n        return;\n    }\n    \n    chart = echarts.init(chartContainer);\n    \n    // Attach zoom sync handler\n    var settings = self.ctx.settings || {};\n    if (settings.enableZoomSync !== false) {\n        chart.on('datazoom', handleZoomSync);\n    }\n    \n    updateChart();\n};\n\nfunction handleZoomSync(params) {\n    if (isExternalUpdate) return;\n    \n    var settings = self.ctx.settings || {};\n    if (settings.enableZoomSync === false) return;\n    \n    var debounceMs = settings.zoomSyncDebounce || 150;\n    \n    if (zoomDebounceTimer) {\n        clearTimeout(zoomDebounceTimer);\n    }\n    \n    zoomDebounceTimer = setTimeout(function() {\n        var option = chart.getOption();\n        var dataZoom = option.dataZoom && option.dataZoom[0];\n        if (!dataZoom) return;\n        \n        var timeWindow = self.ctx.timeWindow;\n        if (!timeWindow) return;\n        \n        var totalRange = timeWindow.maxTime - timeWindow.minTime;\n        var startPercent = dataZoom.start || 0;\n        var endPercent = dataZoom.end || 100;\n        \n        // Only sync if actually zoomed (not at 0-100%)\n        if (startPercent > 0.5 || endPercent < 99.5) {\n            var startTime = Math.round(timeWindow.minTime + (totalRange * startPercent / 100));\n            var endTime = Math.round(timeWindow.minTime + (totalRange * endPercent / 100));\n            \n            // Update dashboard timewindow - this syncs all widgets\n            if (self.ctx.dashboard && self.ctx.dashboard.onUpdateTimewindow) {\n                self.ctx.dashboard.onUpdateTimewindow(startTime, endTime);\n            }\n        }\n    }, debounceMs);\n}\n\nself.onDataUpdated = function() {\n    isExternalUpdate = true;\n    updateChart();\n    setTimeout(function() { isExternalUpdate = false; }, 100);\n};\n\nfunction updateChart() {\n    if (!chart) return;\n    \n    var settings = self.ctx.settings || {};\n    var chartType = settings.chartType || 'line';\n    var smoothLine = settings.smoothLine !== false;\n    var showDataZoomSlider = settings.showDataZoomSlider !== false;\n    var showLegend = settings.showLegend !== false;\n    var showTooltip = settings.showTooltip !== false;\n    var stack = settings.stack || false;\n    \n    var data = self.ctx.data || [];\n    if (!data.length) {\n        chart.setOption({\n            title: { text: 'No data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    // Build series from all datasources\n    var series = [];\n    var legendData = [];\n    \n    for (var i = 0; i < data.length; i++) {\n        var ds = data[i];\n        if (!ds.data || !ds.data.length) continue;\n        \n        var dataKey = ds.dataKey || {};\n        var label = dataKey.label || dataKey.name || 'Series ' + (i + 1);\n        var color = dataKey.color || getDefaultColor(i);\n        var units = dataKey.units || '';\n        \n        legendData.push(label);\n        \n        var seriesData = ds.data.map(function(d) { return [d[0], d[1]]; });\n        \n        var seriesConfig = {\n            name: label,\n            type: chartType === 'bar' ? 'bar' : 'line',\n            data: seriesData,\n            smooth: smoothLine && chartType !== 'bar',\n            symbol: chartType === 'line' ? 'none' : undefined,\n            lineStyle: { color: color, width: 2 },\n            itemStyle: { color: color }\n        };\n        \n        if (chartType === 'area') {\n            seriesConfig.type = 'line';\n            seriesConfig.areaStyle = { color: color, opacity: 0.3 };\n        }\n        \n        if (stack) {\n            seriesConfig.stack = 'total';\n            if (chartType === 'area' || chartType === 'bar') {\n                seriesConfig.areaStyle = seriesConfig.areaStyle || {};\n                seriesConfig.areaStyle.opacity = 0.7;\n            }\n        }\n        \n        series.push(seriesConfig);\n    }\n    \n    if (series.length === 0) {\n        chart.setOption({\n            title: { text: 'No valid data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    var option = {\n        tooltip: showTooltip ? {\n            trigger: 'axis',\n            axisPointer: { type: chartType === 'bar' ? 'shadow' : 'cross' },\n            formatter: function(params) {\n                if (!params || !params.length) return '';\n                var d = new Date(params[0].value[0]);\n                var result = d.toLocaleString() + '<br/>';\n                for (var i = 0; i < params.length; i++) {\n                    var p = params[i];\n                    if (p.value && p.value[1] !== null && p.value[1] !== undefined) {\n                        result += '<span style=\"display:inline-block;margin-right:4px;border-radius:10px;width:10px;height:10px;background-color:' + p.color + ';\"></span>';\n                        result += p.seriesName + ': ' + p.value[1].toFixed(2) + '<br/>';\n                    }\n                }\n                return result;\n            }\n        } : {},\n        legend: showLegend ? {\n            data: legendData,\n            top: 5,\n            type: legendData.length > 5 ? 'scroll' : 'plain'\n        } : {},\n        grid: {\n            left: 50,\n            right: 20,\n            top: showLegend ? 40 : 20,\n            bottom: showDataZoomSlider ? 50 : 30\n        },\n        xAxis: {\n            type: 'time',\n            axisLabel: { fontSize: 10 },\n            splitLine: { show: false }\n        },\n        yAxis: {\n            type: 'value',\n            axisLabel: { fontSize: 10 },\n            splitLine: { lineStyle: { type: 'dashed', opacity: 0.3 } }\n        },\n        dataZoom: [\n            { type: 'inside', xAxisIndex: 0 },\n            showDataZoomSlider ? { type: 'slider', xAxisIndex: 0, bottom: 5, height: 20 } : null\n        ].filter(function(x) { return x !== null; }),\n        series: series\n    };\n    \n    chart.setOption(option, true);\n}\n\nfunction getDefaultColor(index) {\n    var colors = ['#2196F3', '#4CAF50', '#FF9800', '#E91E63', '#9C27B0', '#00BCD4', '#795548', '#607D8B'];\n    return colors[index % colors.length];\n}\n\nself.onResize = function() {\n    if (chart) {\n        chart.resize();\n    }\n};\n\nself.onDestroy = function() {\n    if (chart) {\n        chart.off('datazoom');\n        chart.dispose();\n        chart = null;\n    }\n    if (zoomDebounceTimer) {\n        clearTimeout(zoomDebounceTimer);\n    }\n};\n\nself.typeParameters = function() {\n    return {\n        previewWidth: '80%',\n        embedTitlePanel: true,\n        dataKeySettingsFunction: function() { return {}; },\n        defaultDataKeysFunction: function() {\n            return [{ name: 'temperature', label: 'Temperature', type: 'timeseries', units: '', decimals: 1 }];\n        }\n    };\n};\n",
+    "templateHtml": "<div id=\"widget-wrapper\" style=\"width: 100%; height: 100%; display: flex; flex-direction: column;\">\n  <div id=\"stats-card-top\" style=\"padding: 4px 8px; display: none;\"></div>\n  <div style=\"flex: 1; min-height: 0; display: flex;\">\n    <div id=\"stats-card-left\" style=\"padding: 4px; display: none;\"></div>\n    <div id=\"chart-container\" style=\"flex: 1; min-height: 0;\"></div>\n    <div id=\"stats-card-right\" style=\"padding: 4px; display: none;\"></div>\n  </div>\n  <div id=\"stats-card-bottom\" style=\"padding: 4px 8px; display: none;\"></div>\n</div>",
+    "templateCss": "#widget-wrapper { position: relative; }\n#chart-container { position: relative; }",
+    "controllerScript": "/**\n * ECO Timeseries Zoom Sync Widget\n *\n * Time series visualization with configurable chart types, multi-series support,\n * dual Y-axes, statistics cards, and internal zoom (no dashboard sync).\n * Reference implementation for ECO Custom Widgets.\n */\n\nvar chart = null;\nvar chartContainer = null;\nvar statsCardContainers = {};\n\nself.onInit = function() {\n    chartContainer = self.ctx.$container.find('#chart-container')[0];\n    statsCardContainers = {\n        top: self.ctx.$container.find('#stats-card-top')[0],\n        bottom: self.ctx.$container.find('#stats-card-bottom')[0],\n        left: self.ctx.$container.find('#stats-card-left')[0],\n        right: self.ctx.$container.find('#stats-card-right')[0]\n    };\n\n    if (!chartContainer) {\n        console.error('ECO Timeseries Zoom Sync: Chart container not found');\n        return;\n    }\n\n    if (typeof echarts === 'undefined') {\n        console.error('ECO Timeseries Zoom Sync: ECharts library not loaded');\n        return;\n    }\n\n    chart = echarts.init(chartContainer);\n    updateChart();\n};\n\nself.onDataUpdated = function() {\n    updateChart();\n};\n\nfunction updateChart() {\n    if (!chart) return;\n\n    var settings = self.ctx.settings || {};\n    var data = self.ctx.data || [];\n\n    // Chart type settings\n    var chartType = settings.chartType || 'line';\n    var smoothLine = settings.smoothLine !== false;\n\n    // Legend settings\n    var showLegend = settings.showLegend !== false;\n    var legendStyle = settings.legendStyle || 'classic';\n    var legendPosition = settings.legendPosition || 'bottom';\n    var legendAlign = settings.legendAlign || 'center';\n    var legendCardColorMode = settings.legendCardColorMode || 'auto';\n    var legendCardColor = settings.legendCardColor || '#2196F3';\n    var legendValues = settings.legendValues || ['current'];\n\n    // Timestamp settings\n    var showTimestamp = settings.showTimestamp !== false;\n    var timestampFormat = settings.timestampFormat || 'YYYY-MM-DD HH:mm:ss';\n\n    // DataZoom settings\n    var showDataZoomSlider = settings.showDataZoomSlider !== false;\n\n    // Y-Axis settings\n    var yAxisMin = settings.yAxisMin;\n    var yAxisMax = settings.yAxisMax;\n    var yAxis2Min = settings.yAxis2Min;\n    var yAxis2Max = settings.yAxis2Max;\n\n    // Toolbox settings\n    var showToolbox = settings.showToolbox !== false;\n    var showSaveAsImage = settings.showSaveAsImage !== false;\n    var showDataView = settings.showDataView !== false;\n    var showDataZoom = settings.showDataZoom !== false;\n    var showRestore = settings.showRestore !== false;\n\n    // Check for valid data\n    if (!data.length) {\n        showNoData('No data available');\n        return;\n    }\n\n    // Process all datasources\n    var seriesConfigs = [];\n    var allStats = [];\n    var hasSecondAxis = false;\n\n    for (var i = 0; i < data.length; i++) {\n        var ds = data[i];\n        if (!ds.data || !ds.data.length) continue;\n\n        var dataKey = ds.dataKey || {};\n        var datasource = ds.datasource || {};\n\n        // Series identification\n        var label = dataKey.label || datasource.entityName || datasource.name || dataKey.name || 'Series ' + (i + 1);\n        var units = dataKey.units || '';\n        var decimals = dataKey.decimals !== undefined ? dataKey.decimals : 2;\n        var color = dataKey.color || getDefaultColor(i);\n\n        // Determine Y-axis assignment (auto-detect based on units)\n        var yAxisIndex = 0;\n        if (i > 0 && seriesConfigs.length > 0) {\n            var firstUnits = seriesConfigs[0].units;\n            if (units && firstUnits && units !== firstUnits) {\n                yAxisIndex = 1;\n                hasSecondAxis = true;\n            }\n        }\n\n        // Extract values and timestamps\n        var seriesData = [];\n        var values = [];\n        var lastTimestamp = null;\n        var lastValue = null;\n\n        for (var j = 0; j < ds.data.length; j++) {\n            var ts = ds.data[j][0];\n            var val = ds.data[j][1];\n            if (val !== null && !isNaN(val)) {\n                seriesData.push([ts, val]);\n                values.push(val);\n                lastTimestamp = ts;\n                lastValue = val;\n            }\n        }\n\n        if (values.length === 0) continue;\n\n        // Calculate statistics for this series\n        var stats = calculateStatistics(values);\n        stats.current = lastValue;\n        stats.lastTimestamp = lastTimestamp;\n\n        seriesConfigs.push({\n            label: label,\n            units: units,\n            decimals: decimals,\n            color: color,\n            data: seriesData,\n            stats: stats,\n            yAxisIndex: yAxisIndex\n        });\n\n        allStats.push({\n            label: label,\n            units: units,\n            decimals: decimals,\n            color: color,\n            stats: stats\n        });\n    }\n\n    if (seriesConfigs.length === 0) {\n        showNoData('No valid data points');\n        return;\n    }\n\n    // Build ECharts option\n    var option = buildChartOption({\n        chartType: chartType,\n        smoothLine: smoothLine,\n        seriesConfigs: seriesConfigs,\n        hasSecondAxis: hasSecondAxis,\n        showLegend: showLegend,\n        legendStyle: legendStyle,\n        legendPosition: legendPosition,\n        showDataZoomSlider: showDataZoomSlider,\n        yAxisMin: yAxisMin,\n        yAxisMax: yAxisMax,\n        yAxis2Min: yAxis2Min,\n        yAxis2Max: yAxis2Max,\n        showToolbox: showToolbox,\n        showSaveAsImage: showSaveAsImage,\n        showDataView: showDataView,\n        showDataZoom: showDataZoom,\n        showRestore: showRestore\n    });\n\n    chart.setOption(option, true);\n\n    // Render statistics cards (DOM-based)\n    renderStatsCard({\n        showLegend: showLegend,\n        legendStyle: legendStyle,\n        legendAlign: legendAlign,\n        legendCardColorMode: legendCardColorMode,\n        legendCardColor: legendCardColor,\n        legendValues: legendValues,\n        legendPosition: legendPosition,\n        showTimestamp: showTimestamp,\n        timestampFormat: timestampFormat,\n        allStats: allStats\n    });\n}\n\nfunction renderStatsCard(config) {\n    // Clear all containers first\n    ['top', 'bottom', 'left', 'right'].forEach(function(pos) {\n        var container = statsCardContainers[pos];\n        if (container) {\n            container.style.display = 'none';\n            while (container.firstChild) {\n                container.removeChild(container.firstChild);\n            }\n        }\n    });\n\n    var legendValues = config.legendValues || [];\n    var legendStyle = config.legendStyle || 'classic';\n    var showCard = config.showLegend && legendStyle === 'card' && config.allStats && config.allStats.length > 0;\n\n    if (!showCard) return;\n\n    var position = config.legendPosition || 'bottom';\n    var align = config.legendAlign || 'center';\n    var container = statsCardContainers[position];\n    if (!container) return;\n\n    // Set container to flex for alignment\n    var isVertical = (position === 'left' || position === 'right');\n    var justifyMap = { left: 'flex-start', center: 'center', right: 'flex-end' };\n    var alignMap = { left: 'flex-start', center: 'center', right: 'flex-end' };\n\n    container.style.display = 'flex';\n    container.style.flexWrap = 'wrap';\n    container.style.gap = '8px';\n\n    if (isVertical) {\n        container.style.flexDirection = 'column';\n        container.style.alignItems = alignMap[align];\n        container.style.justifyContent = 'flex-start';\n    } else {\n        container.style.flexDirection = 'row';\n        container.style.justifyContent = justifyMap[align];\n        container.style.alignItems = 'flex-start';\n    }\n\n    // Create a card for each series\n    config.allStats.forEach(function(seriesInfo) {\n        var stats = seriesInfo.stats;\n        var unit = seriesInfo.units || '';\n        var dec = seriesInfo.decimals !== undefined ? seriesInfo.decimals : 2;\n        var seriesColor = seriesInfo.color || '#2196F3';\n        var colorMode = config.legendCardColorMode || 'auto';\n        var manualColor = config.legendCardColor || '#2196F3';\n\n        // Determine background color/style based on mode\n        var bgColor = colorMode === 'manual' ? manualColor : seriesColor;\n        var bgStyle;\n        if (colorMode === 'gradient') {\n            var gradientDir = isVertical ? '180deg' : '135deg';\n            bgStyle = 'linear-gradient(' + gradientDir + ', ' + bgColor + ' 0%, ' + adjustColor(bgColor, -40) + ' 100%)';\n        } else {\n            bgStyle = bgColor;\n        }\n\n        // Build the statistics card using DOM methods\n        var card = document.createElement('div');\n        card.style.cssText = 'background: ' + bgStyle + '; border-radius: 6px; padding: ' + (isVertical ? '10px 8px' : '8px 12px') + '; color: white; box-shadow: 0 2px 6px rgba(0,0,0,0.12); width: fit-content;';\n\n        // Title with series name\n        var titleEl = document.createElement('div');\n        titleEl.style.cssText = 'font-size: ' + (isVertical ? '11px' : '12px') + '; font-weight: 600; margin-bottom: 8px; opacity: 0.95;' + (isVertical ? ' text-align: center;' : '');\n        titleEl.textContent = seriesInfo.label + (unit ? ' (' + unit + ')' : '');\n        card.appendChild(titleEl);\n\n        // Statistics row\n        var statsRow = document.createElement('div');\n        statsRow.style.cssText = 'display: flex; flex-wrap: wrap; gap: 6px;' + (isVertical ? ' flex-direction: column;' : '');\n\n        legendValues.forEach(function(val) {\n            var statValue, label, icon;\n            switch(val) {\n                case 'current': statValue = stats.current; label = 'Current'; icon = '\\u25CF'; break;\n                case 'min': statValue = stats.min; label = 'Min'; icon = '\\u2193'; break;\n                case 'max': statValue = stats.max; label = 'Max'; icon = '\\u2191'; break;\n                case 'mean': statValue = stats.mean; label = 'Mean'; icon = '\\u03BC'; break;\n                case 'median': statValue = stats.median; label = 'Median'; icon = '~'; break;\n                case 'sum': statValue = stats.sum; label = 'Sum'; icon = '\\u03A3'; break;\n                case 'count': statValue = stats.count; label = 'Count'; icon = 'n'; break;\n                default: return;\n            }\n            if (statValue !== undefined && statValue !== null) {\n                var formattedVal = val === 'count' ? String(statValue) : formatValue(statValue, dec);\n\n                var statBox = document.createElement('div');\n                statBox.style.cssText = 'background: rgba(255,255,255,0.18); border-radius: 4px; padding: ' + (isVertical ? '4px 6px' : '4px 8px') + ';' + (isVertical ? ' text-align: center;' : ' min-width: 60px;');\n\n                var labelEl = document.createElement('div');\n                labelEl.style.cssText = 'font-size: 9px; opacity: 0.85;';\n                labelEl.textContent = icon + ' ' + label;\n                statBox.appendChild(labelEl);\n\n                var valueEl = document.createElement('div');\n                valueEl.style.cssText = 'font-size: ' + (isVertical ? '12px' : '13px') + '; font-weight: 600;';\n                valueEl.textContent = formattedVal;\n                statBox.appendChild(valueEl);\n\n                statsRow.appendChild(statBox);\n            }\n        });\n\n        card.appendChild(statsRow);\n\n        // Timestamp display\n        if (config.showTimestamp && stats.lastTimestamp) {\n            var timestampEl = document.createElement('div');\n            timestampEl.style.cssText = 'font-size: 9px; opacity: 0.7; margin-top: 6px;' + (isVertical ? ' text-align: center;' : '');\n            timestampEl.textContent = formatTimestamp(stats.lastTimestamp, config.timestampFormat);\n            card.appendChild(timestampEl);\n        }\n\n        container.appendChild(card);\n    });\n}\n\n// Helper function to darken/lighten a hex color\nfunction adjustColor(color, amount) {\n    var usePound = false;\n    if (color[0] === '#') {\n        color = color.slice(1);\n        usePound = true;\n    }\n\n    var num = parseInt(color, 16);\n    var r = Math.min(255, Math.max(0, (num >> 16) + amount));\n    var g = Math.min(255, Math.max(0, ((num >> 8) & 0x00FF) + amount));\n    var b = Math.min(255, Math.max(0, (num & 0x0000FF) + amount));\n\n    return (usePound ? '#' : '') + (g | (b << 8) | (r << 16)).toString(16).padStart(6, '0');\n}\n\nfunction calculateStatistics(values) {\n    if (values.length === 0) {\n        return { mean: 0, median: 0, min: 0, max: 0, sum: 0, count: 0 };\n    }\n\n    var sorted = values.slice().sort(function(a, b) { return a - b; });\n    var sum = 0;\n    for (var i = 0; i < values.length; i++) {\n        sum += values[i];\n    }\n\n    return {\n        mean: sum / values.length,\n        median: percentile(sorted, 50),\n        min: sorted[0],\n        max: sorted[sorted.length - 1],\n        sum: sum,\n        count: values.length\n    };\n}\n\nfunction percentile(sortedValues, p) {\n    if (sortedValues.length === 0) return 0;\n    if (sortedValues.length === 1) return sortedValues[0];\n\n    var index = (p / 100) * (sortedValues.length - 1);\n    var lower = Math.floor(index);\n    var upper = Math.ceil(index);\n    var weight = index - lower;\n\n    if (upper >= sortedValues.length) return sortedValues[sortedValues.length - 1];\n    return sortedValues[lower] * (1 - weight) + sortedValues[upper] * weight;\n}\n\nfunction formatValue(value, decimals) {\n    if (value === null || value === undefined) return '-';\n    if (decimals === undefined || decimals === null) {\n        if (Math.abs(value) >= 1000) {\n            return value.toFixed(0);\n        } else if (Math.abs(value) >= 100) {\n            return value.toFixed(1);\n        } else {\n            return value.toFixed(2);\n        }\n    }\n    return value.toFixed(decimals);\n}\n\nfunction formatTimestamp(ts, format) {\n    var d = new Date(ts);\n    var year = d.getFullYear();\n    var month = String(d.getMonth() + 1).padStart(2, '0');\n    var day = String(d.getDate()).padStart(2, '0');\n    var hours = String(d.getHours()).padStart(2, '0');\n    var minutes = String(d.getMinutes()).padStart(2, '0');\n    var seconds = String(d.getSeconds()).padStart(2, '0');\n\n    // Simple format replacement\n    var result = format\n        .replace('YYYY', year)\n        .replace('MM', month)\n        .replace('DD', day)\n        .replace('HH', hours)\n        .replace('mm', minutes)\n        .replace('ss', seconds);\n\n    return result;\n}\n\nfunction showNoData(message) {\n    if (!chart) return;\n    chart.setOption({\n        title: {\n            text: message,\n            left: 'center',\n            top: 'middle',\n            textStyle: { color: '#999', fontSize: 14 }\n        }\n    }, true);\n}\n\nfunction getDefaultColor(index) {\n    var colors = ['#2196F3', '#4CAF50', '#FF9800', '#E91E63', '#9C27B0', '#00BCD4', '#795548', '#607D8B'];\n    return colors[index % colors.length];\n}\n\nfunction buildChartOption(config) {\n    var seriesConfigs = config.seriesConfigs;\n    var chartType = config.chartType || 'line';\n    var smoothLine = config.smoothLine !== false;\n\n    // Build series\n    var series = [];\n    var legendData = [];\n\n    for (var i = 0; i < seriesConfigs.length; i++) {\n        var sc = seriesConfigs[i];\n        legendData.push(sc.label);\n\n        var seriesConfig = {\n            name: sc.label,\n            type: chartType === 'scatter' ? 'scatter' : (chartType === 'bar' ? 'bar' : 'line'),\n            data: sc.data,\n            yAxisIndex: sc.yAxisIndex,\n            smooth: smoothLine && chartType === 'line',\n            symbol: chartType === 'line' ? 'none' : (chartType === 'scatter' ? 'circle' : undefined),\n            symbolSize: chartType === 'scatter' ? 8 : undefined,\n            lineStyle: { color: sc.color, width: 2 },\n            itemStyle: { color: sc.color }\n        };\n\n        // Area fill for area chart type\n        if (chartType === 'area') {\n            seriesConfig.type = 'line';\n            seriesConfig.areaStyle = { color: sc.color, opacity: 0.3 };\n            seriesConfig.smooth = smoothLine;\n            seriesConfig.symbol = 'none';\n        }\n\n        series.push(seriesConfig);\n    }\n\n    // Calculate grid margins based on legend position\n    var legendStyle = config.legendStyle || 'classic';\n    var legendPosition = config.legendPosition || 'bottom';\n    var useStatsCard = legendStyle === 'card';\n    var legendMargin = (config.showLegend && !useStatsCard) ? 35 : 0;\n\n    var topMargin = 40;\n    var bottomMargin = config.showDataZoomSlider ? 60 : 40;\n    var leftMargin = 60;\n    var rightMargin = config.hasSecondAxis ? 60 : 20;\n\n    if (!useStatsCard) {\n        if (legendPosition === 'top') topMargin += legendMargin;\n        if (legendPosition === 'bottom') bottomMargin += legendMargin;\n        if (legendPosition === 'left') leftMargin += legendMargin;\n        if (legendPosition === 'right') rightMargin += legendMargin;\n    }\n\n    // Build Y-axes\n    var yAxes = [{\n        type: 'value',\n        name: seriesConfigs[0] ? seriesConfigs[0].units : '',\n        nameLocation: 'middle',\n        nameGap: 45,\n        min: config.yAxisMin,\n        max: config.yAxisMax,\n        axisLabel: { fontSize: 10 },\n        splitLine: { lineStyle: { type: 'dashed', opacity: 0.3 } }\n    }];\n\n    if (config.hasSecondAxis) {\n        // Find first series on second axis for units\n        var secondAxisUnits = '';\n        for (var j = 0; j < seriesConfigs.length; j++) {\n            if (seriesConfigs[j].yAxisIndex === 1) {\n                secondAxisUnits = seriesConfigs[j].units;\n                break;\n            }\n        }\n        yAxes.push({\n            type: 'value',\n            name: secondAxisUnits,\n            nameLocation: 'middle',\n            nameGap: 45,\n            min: config.yAxis2Min,\n            max: config.yAxis2Max,\n            axisLabel: { fontSize: 10 },\n            splitLine: { show: false }\n        });\n    }\n\n    // Build legend config (only for classic style)\n    var legendConfig = null;\n    if (config.showLegend && !useStatsCard) {\n        legendConfig = {\n            data: legendData,\n            textStyle: { fontSize: 11 }\n        };\n\n        switch (legendPosition) {\n            case 'top':\n                legendConfig.top = 5;\n                legendConfig.left = 'center';\n                legendConfig.orient = 'horizontal';\n                break;\n            case 'bottom':\n                legendConfig.bottom = config.showDataZoomSlider ? 30 : 5;\n                legendConfig.left = 'center';\n                legendConfig.orient = 'horizontal';\n                break;\n            case 'left':\n                legendConfig.left = 5;\n                legendConfig.top = 'middle';\n                legendConfig.orient = 'vertical';\n                break;\n            case 'right':\n                legendConfig.right = config.hasSecondAxis ? 65 : 5;\n                legendConfig.top = 'middle';\n                legendConfig.orient = 'vertical';\n                break;\n            default:\n                legendConfig.bottom = config.showDataZoomSlider ? 30 : 5;\n                legendConfig.left = 'center';\n                legendConfig.orient = 'horizontal';\n        }\n    }\n\n    // Build toolbox\n    var toolboxConfig = null;\n    if (config.showToolbox) {\n        toolboxConfig = {\n            show: true,\n            right: 10,\n            top: 5,\n            feature: {}\n        };\n\n        if (config.showSaveAsImage) {\n            toolboxConfig.feature.saveAsImage = {\n                show: true,\n                title: 'Save as PNG',\n                pixelRatio: 2\n            };\n        }\n\n        if (config.showDataView) {\n            toolboxConfig.feature.dataView = {\n                show: true,\n                title: 'Data View',\n                readOnly: true,\n                lang: ['Data View', 'Close', 'Refresh'],\n                optionToContent: function(opt) {\n                    var seriesList = opt.series || [];\n                    var html = '<div style=\"padding: 12px; font-family: -apple-system, BlinkMacSystemFont, sans-serif;\">';\n\n                    for (var i = 0; i < seriesList.length; i++) {\n                        var s = seriesList[i];\n                        var data = s.data || [];\n                        if (data.length === 0) continue;\n\n                        html += '<div style=\"font-size: 14px; font-weight: 600; margin: 12px 0 8px 0;\">' + s.name + ' (' + data.length + ' points)</div>';\n                        html += '<div style=\"max-height: 300px; overflow: auto; border: 1px solid #e5e7eb; border-radius: 6px;\">';\n                        html += '<table style=\"width: 100%; border-collapse: collapse; font-size: 12px;\">';\n                        html += '<thead style=\"position: sticky; top: 0; background: #f9fafb;\">';\n                        html += '<tr><th style=\"padding: 8px; text-align: left; border-bottom: 2px solid #e5e7eb;\">Timestamp</th>';\n                        html += '<th style=\"padding: 8px; text-align: right; border-bottom: 2px solid #e5e7eb;\">Value</th></tr></thead>';\n                        html += '<tbody>';\n\n                        for (var j = 0; j < data.length; j++) {\n                            var row = data[j];\n                            var d = new Date(row[0]);\n                            var ts = d.getFullYear() + '-' +\n                                String(d.getMonth() + 1).padStart(2, '0') + '-' +\n                                String(d.getDate()).padStart(2, '0') + ' ' +\n                                String(d.getHours()).padStart(2, '0') + ':' +\n                                String(d.getMinutes()).padStart(2, '0') + ':' +\n                                String(d.getSeconds()).padStart(2, '0');\n                            var rowBg = j % 2 === 0 ? '#ffffff' : '#f9fafb';\n                            html += '<tr style=\"background: ' + rowBg + ';\">';\n                            html += '<td style=\"padding: 6px 8px; font-family: monospace; font-size: 11px;\">' + ts + '</td>';\n                            html += '<td style=\"padding: 6px 8px; text-align: right; font-weight: 500;\">' + (row[1] !== null ? row[1].toFixed(2) : '-') + '</td>';\n                            html += '</tr>';\n                        }\n\n                        html += '</tbody></table></div>';\n                    }\n\n                    html += '</div>';\n                    return html;\n                }\n            };\n        }\n\n        if (config.showDataZoom) {\n            toolboxConfig.feature.dataZoom = {\n                show: true,\n                title: { zoom: 'Zoom', back: 'Reset Zoom' }\n            };\n        }\n\n        if (config.showRestore) {\n            toolboxConfig.feature.restore = {\n                show: true,\n                title: 'Restore'\n            };\n        }\n    }\n\n    // Build dataZoom\n    var dataZoomConfig = [\n        { type: 'inside', xAxisIndex: 0 }\n    ];\n\n    if (config.showDataZoomSlider) {\n        dataZoomConfig.push({\n            type: 'slider',\n            xAxisIndex: 0,\n            bottom: 5,\n            height: 20\n        });\n    }\n\n    // Build tooltip\n    var tooltipConfig = {\n        trigger: 'axis',\n        axisPointer: { type: chartType === 'bar' ? 'shadow' : 'cross' },\n        formatter: function(params) {\n            if (!params || !params.length) return '';\n            var d = new Date(params[0].value[0]);\n            var result = d.toLocaleString() + '<br/>';\n\n            for (var i = 0; i < params.length; i++) {\n                var p = params[i];\n                if (p.value && p.value[1] !== null && p.value[1] !== undefined) {\n                    result += '<span style=\"display:inline-block;margin-right:4px;border-radius:10px;width:10px;height:10px;background-color:' + p.color + ';\"></span>';\n                    result += p.seriesName + ': ' + p.value[1].toFixed(2) + '<br/>';\n                }\n            }\n            return result;\n        }\n    };\n\n    return {\n        tooltip: tooltipConfig,\n        legend: legendConfig,\n        toolbox: toolboxConfig,\n        grid: {\n            left: leftMargin,\n            right: rightMargin,\n            top: topMargin,\n            bottom: bottomMargin\n        },\n        xAxis: {\n            type: 'time',\n            axisLabel: { fontSize: 10 },\n            splitLine: { show: false }\n        },\n        yAxis: yAxes,\n        dataZoom: dataZoomConfig,\n        series: series\n    };\n}\n\nself.onResize = function() {\n    if (chart) {\n        chart.resize();\n    }\n};\n\nself.onDestroy = function() {\n    if (chart) {\n        chart.dispose();\n        chart = null;\n    }\n};\n\nself.typeParameters = function() {\n    return {\n        previewWidth: '100%',\n        previewHeight: '100%',\n        embedTitlePanel: false,\n        hasDataExportAction: true,\n        dataKeySettingsFunction: function() { return {}; },\n        defaultDataKeysFunction: function() {\n            return [{\n                name: 'temperature',\n                label: 'Temperature',\n                type: 'timeseries',\n                units: '',\n                decimals: 1\n            }];\n        }\n    };\n};\n",
     "settingsSchema": {
       "schema": {
         "type": "object",
-        "title": "Synced Zoom Time Series Settings",
+        "title": "ECO Timeseries Zoom Sync Settings",
         "properties": {
-          "enableZoomSync": {
-            "title": "Enable Zoom Sync",
-            "type": "boolean",
-            "default": true
-          },
-          "zoomSyncDebounce": {
-            "title": "Zoom Sync Debounce (ms)",
-            "type": "number",
-            "default": 150,
-            "minimum": 50,
-            "maximum": 500
-          },
-          "showDataZoomSlider": {
-            "title": "Show Zoom Slider",
-            "type": "boolean",
-            "default": true
-          },
           "chartType": {
             "title": "Chart Type",
             "type": "string",
             "default": "line",
-            "enum": ["line", "bar", "area"]
+            "enum": ["line", "bar", "area", "scatter"]
           },
           "smoothLine": {
             "title": "Smooth Lines",
@@ -54,26 +37,103 @@
             "type": "boolean",
             "default": true
           },
-          "showTooltip": {
-            "title": "Show Tooltip",
+          "legendStyle": {
+            "title": "Legend Style",
+            "type": "string",
+            "default": "classic",
+            "enum": ["classic", "card"]
+          },
+          "legendPosition": {
+            "title": "Legend Position",
+            "type": "string",
+            "default": "bottom",
+            "enum": ["top", "bottom", "left", "right"]
+          },
+          "legendAlign": {
+            "title": "Legend Alignment",
+            "type": "string",
+            "default": "center",
+            "enum": ["left", "center", "right"]
+          },
+          "legendCardColorMode": {
+            "title": "Card Color Mode",
+            "type": "string",
+            "default": "auto",
+            "enum": ["auto", "manual", "gradient"]
+          },
+          "legendCardColor": {
+            "title": "Card Color",
+            "type": "string",
+            "default": "#2196F3"
+          },
+          "legendValues": {
+            "title": "Statistics to Display",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": ["current"]
+          },
+          "showTimestamp": {
+            "title": "Show Timestamp",
             "type": "boolean",
             "default": true
           },
-          "stack": {
-            "title": "Stack Series",
+          "timestampFormat": {
+            "title": "Timestamp Format",
+            "type": "string",
+            "default": "YYYY-MM-DD HH:mm:ss"
+          },
+          "showDataZoomSlider": {
+            "title": "Show Zoom Slider",
             "type": "boolean",
-            "default": false
+            "default": true
+          },
+          "yAxisMin": {
+            "title": "Y-Axis Minimum",
+            "type": "number"
+          },
+          "yAxisMax": {
+            "title": "Y-Axis Maximum",
+            "type": "number"
+          },
+          "yAxis2Min": {
+            "title": "Second Y-Axis Minimum",
+            "type": "number"
+          },
+          "yAxis2Max": {
+            "title": "Second Y-Axis Maximum",
+            "type": "number"
+          },
+          "showToolbox": {
+            "title": "Show Toolbox",
+            "type": "boolean",
+            "default": true
+          },
+          "showSaveAsImage": {
+            "title": "Show Save as Image",
+            "type": "boolean",
+            "default": true
+          },
+          "showDataView": {
+            "title": "Show Data View",
+            "type": "boolean",
+            "default": true
+          },
+          "showDataZoom": {
+            "title": "Show Data Zoom Tool",
+            "type": "boolean",
+            "default": true
+          },
+          "showRestore": {
+            "title": "Show Restore",
+            "type": "boolean",
+            "default": true
           }
         },
         "required": []
       },
       "form": [
-        "enableZoomSync",
-        {
-          "key": "zoomSyncDebounce",
-          "condition": "model.enableZoomSync === true"
-        },
-        "showDataZoomSlider",
         {
           "key": "chartType",
           "type": "rc-select",
@@ -81,34 +141,145 @@
           "items": [
             { "value": "line", "label": "Line Chart" },
             { "value": "bar", "label": "Bar Chart" },
-            { "value": "area", "label": "Area Chart" }
+            { "value": "area", "label": "Area Chart" },
+            { "value": "scatter", "label": "Scatter Plot" }
           ]
         },
         {
           "key": "smoothLine",
-          "condition": "model.chartType !== 'bar'"
+          "condition": "model.chartType === 'line' || model.chartType === 'area'"
         },
-        "showLegend",
-        "showTooltip",
-        "stack"
+        "showDataZoomSlider",
+        {
+          "type": "fieldset",
+          "title": "Legend Settings",
+          "items": [
+            "showLegend",
+            {
+              "key": "legendStyle",
+              "type": "rc-select",
+              "multiple": false,
+              "condition": "model.showLegend === true",
+              "items": [
+                { "value": "classic", "label": "Classic (Text)" },
+                { "value": "card", "label": "Statistics Card" }
+              ]
+            },
+            {
+              "key": "legendPosition",
+              "type": "rc-select",
+              "multiple": false,
+              "condition": "model.showLegend === true",
+              "items": [
+                { "value": "top", "label": "Top" },
+                { "value": "bottom", "label": "Bottom" },
+                { "value": "left", "label": "Left" },
+                { "value": "right", "label": "Right" }
+              ]
+            },
+            {
+              "key": "legendAlign",
+              "type": "rc-select",
+              "multiple": false,
+              "condition": "model.showLegend === true && model.legendStyle === 'card'",
+              "items": [
+                { "value": "left", "label": "Left" },
+                { "value": "center", "label": "Center" },
+                { "value": "right", "label": "Right" }
+              ]
+            },
+            {
+              "key": "legendCardColorMode",
+              "type": "rc-select",
+              "multiple": false,
+              "condition": "model.showLegend === true && model.legendStyle === 'card'",
+              "items": [
+                { "value": "auto", "label": "Auto (Series Color)" },
+                { "value": "manual", "label": "Manual Color" },
+                { "value": "gradient", "label": "Gradient" }
+              ]
+            },
+            {
+              "key": "legendCardColor",
+              "type": "color",
+              "condition": "model.showLegend === true && model.legendStyle === 'card' && model.legendCardColorMode === 'manual'"
+            },
+            {
+              "key": "legendValues",
+              "type": "checkboxes",
+              "condition": "model.showLegend === true && model.legendStyle === 'card'",
+              "titleMap": [
+                { "value": "current", "name": "Current Value" },
+                { "value": "min", "name": "Minimum" },
+                { "value": "max", "name": "Maximum" },
+                { "value": "mean", "name": "Mean" },
+                { "value": "median", "name": "Median" },
+                { "value": "sum", "name": "Sum" },
+                { "value": "count", "name": "Count" }
+              ]
+            },
+            {
+              "key": "showTimestamp",
+              "condition": "model.showLegend === true && model.legendStyle === 'card'"
+            },
+            {
+              "key": "timestampFormat",
+              "condition": "model.showLegend === true && model.legendStyle === 'card' && model.showTimestamp === true"
+            }
+          ]
+        },
+        {
+          "type": "fieldset",
+          "title": "Y-Axis Settings",
+          "items": [
+            "yAxisMin",
+            "yAxisMax",
+            "yAxis2Min",
+            "yAxis2Max"
+          ]
+        },
+        {
+          "type": "fieldset",
+          "title": "Toolbox Settings",
+          "items": [
+            "showToolbox",
+            {
+              "key": "showSaveAsImage",
+              "condition": "model.showToolbox === true"
+            },
+            {
+              "key": "showDataView",
+              "condition": "model.showToolbox === true"
+            },
+            {
+              "key": "showDataZoom",
+              "condition": "model.showToolbox === true"
+            },
+            {
+              "key": "showRestore",
+              "condition": "model.showToolbox === true"
+            }
+          ]
+        }
       ]
     },
     "dataKeySettingsSchema": {},
     "latestDataKeySettingsSchema": {},
-    "defaultConfig": "{\"datasources\":[{\"type\":\"function\",\"name\":\"function\",\"dataKeys\":[{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Value 1\",\"color\":\"#2196f3\",\"settings\":{},\"_hash\":0.456,\"funcBody\":\"var value = prevValue + Math.random() * 10 - 5;\\nif (value < 0) value = 0;\\nif (value > 100) value = 100;\\nreturn value;\",\"units\":\"\",\"decimals\":1},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Value 2\",\"color\":\"#4CAF50\",\"settings\":{},\"_hash\":0.789,\"funcBody\":\"var value = prevValue + Math.random() * 8 - 4;\\nif (value < 0) value = 0;\\nif (value > 80) value = 80;\\nreturn value;\",\"units\":\"\",\"decimals\":1}]}],\"timewindow\":{\"hideInterval\":false,\"hideLastInterval\":false,\"hideQuickInterval\":false,\"hideAggregation\":false,\"hideAggInterval\":false,\"hideTimezone\":false,\"selectedTab\":0,\"realtime\":{\"realtimeType\":0,\"timewindowMs\":3600000,\"quickInterval\":\"CURRENT_HOUR\",\"interval\":5000},\"aggregation\":{\"type\":\"AVG\",\"limit\":25000}},\"showTitle\":true,\"backgroundColor\":\"#fff\",\"color\":\"rgba(0, 0, 0, 0.87)\",\"padding\":\"8px\",\"settings\":{\"enableZoomSync\":true,\"zoomSyncDebounce\":150,\"showDataZoomSlider\":true,\"chartType\":\"line\",\"smoothLine\":true,\"showLegend\":true,\"showTooltip\":true,\"stack\":false},\"title\":\"Synced Zoom Time Series\",\"dropShadow\":true,\"enableFullscreen\":true,\"useDashboardTimewindow\":true,\"displayTimewindow\":true}"
+    "defaultConfig": "{\"datasources\":[{\"type\":\"function\",\"name\":\"function\",\"dataKeys\":[{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Temperature\",\"color\":\"#2196f3\",\"settings\":{},\"_hash\":0.456,\"funcBody\":\"var value = prevValue + Math.random() * 10 - 5;\\nif (value < 0) value = 0;\\nif (value > 100) value = 100;\\nreturn value;\",\"units\":\"C\",\"decimals\":1},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Humidity\",\"color\":\"#4CAF50\",\"settings\":{},\"_hash\":0.789,\"funcBody\":\"var value = prevValue + Math.random() * 8 - 4;\\nif (value < 20) value = 20;\\nif (value > 90) value = 90;\\nreturn value;\",\"units\":\"%\",\"decimals\":1}]}],\"timewindow\":{\"hideInterval\":false,\"hideLastInterval\":false,\"hideQuickInterval\":false,\"hideAggregation\":false,\"hideAggInterval\":false,\"hideTimezone\":false,\"selectedTab\":0,\"realtime\":{\"realtimeType\":0,\"timewindowMs\":3600000,\"quickInterval\":\"CURRENT_HOUR\",\"interval\":5000},\"aggregation\":{\"type\":\"AVG\",\"limit\":25000}},\"showTitle\":true,\"backgroundColor\":\"#fff\",\"color\":\"rgba(0, 0, 0, 0.87)\",\"padding\":\"8px\",\"settings\":{\"chartType\":\"line\",\"smoothLine\":true,\"showLegend\":true,\"legendStyle\":\"classic\",\"legendPosition\":\"bottom\",\"legendAlign\":\"center\",\"legendCardColorMode\":\"auto\",\"legendCardColor\":\"#2196F3\",\"legendValues\":[\"current\"],\"showTimestamp\":true,\"timestampFormat\":\"YYYY-MM-DD HH:mm:ss\",\"showDataZoomSlider\":true,\"showToolbox\":true,\"showSaveAsImage\":true,\"showDataView\":true,\"showDataZoom\":true,\"showRestore\":true},\"title\":\"ECO Timeseries Zoom Sync\",\"dropShadow\":true,\"enableFullscreen\":true,\"useDashboardTimewindow\":true,\"displayTimewindow\":true}"
   },
   "tags": [
     "chart",
     "timeseries",
     "time-series",
-    "synced",
-    "synchronized",
     "zoom",
     "line",
     "line chart",
     "bar",
     "bar chart",
     "area",
-    "echarts"
+    "scatter",
+    "echarts",
+    "statistics",
+    "dual-axis"
   ]
 }
