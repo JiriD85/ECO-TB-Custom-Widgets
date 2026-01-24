@@ -12,18 +12,18 @@ This roadmap covers widget platform integration and testing. The core widget fun
 ## Phase Details
 
 ### Phase 1: Platform Integration
-**Goal**: All widgets follow ThingsBoard best practices for buttons, settings, and data handling
+**Goal**: Implement eco_timeseries_zoom_sync as reference widget with full ThingsBoard platform integration
 **Depends on**: Nothing (first phase)
 **Requirements**: PLAT-01, PLAT-02, PLAT-03
 **Success Criteria** (what must be TRUE):
   1. Export and fullscreen buttons appear in widget card header (not ECharts toolbox)
   2. All color settings use ThingsBoard color picker UI
   3. Widgets use platform-provided aggregated data without custom aggregation logic
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 01-01: Card-level buttons configuration
-- [ ] 01-02: Color picker standardization
+- [ ] 01-01-PLAN.md — Complete widget implementation (source + JSON)
+- [ ] 01-02-PLAN.md — Documentation update and ThingsBoard verification
 
 ### Phase 2: Testing & Validation
 **Goal**: Widgets display data correctly in both preview and dashboard contexts
@@ -42,5 +42,5 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Platform Integration | 0/2 | Not started | - |
+| 1. Platform Integration | 0/2 | Planning done | - |
 | 2. Testing & Validation | 0/1 | Not started | - |
