@@ -285,29 +285,40 @@
 
         function formatPeriodLabel(mode, date) {
             var d = new Date(date);
-            var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+            // Use settings formats with fallbacks
+            var dayFormat = settings.dayFormat || 'D MMM YYYY';
+            var weekFormat = settings.weekFormat || 'D-D MMM';
+            var monthFormat = settings.monthFormat || 'MMM YYYY';
 
             switch (mode) {
                 case 'day':
-                    return d.getDate() + ' ' + months[d.getMonth()] + ' ' + d.getFullYear();
+                    return ECOWidgetUtils.format.date(d, dayFormat);
                 case 'week':
                     var range = calculateRange('week', d);
                     var startD = new Date(range.start);
                     var endD = new Date(range.end);
-                    if (startD.getMonth() === endD.getMonth()) {
-                        return startD.getDate() + '-' + endD.getDate() + ' ' + months[startD.getMonth()];
+                    // For week format, handle start-end range
+                    var weekStr = weekFormat;
+                    // Replace first D with start date, second D with end date
+                    if (weekStr.indexOf('D-D') !== -1) {
+                        weekStr = weekStr.replace('D-D', startD.getDate() + '-' + endD.getDate());
+                    } else if (weekStr.indexOf('DD-DD') !== -1) {
+                        weekStr = weekStr.replace('DD-DD', String(startD.getDate()).padStart(2, '0') + '-' + String(endD.getDate()).padStart(2, '0'));
                     } else {
-                        return startD.getDate() + ' ' + months[startD.getMonth()] + ' - ' + endD.getDate() + ' ' + months[endD.getMonth()];
+                        // Fallback: show range
+                        return ECOWidgetUtils.format.date(startD, 'D MMM') + ' - ' + ECOWidgetUtils.format.date(endD, 'D MMM');
                     }
+                    // Replace remaining date parts with start date
+                    return ECOWidgetUtils.format.date(startD, weekStr);
                 case 'month':
-                    return months[d.getMonth()] + ' ' + d.getFullYear();
+                    return ECOWidgetUtils.format.date(d, monthFormat);
                 case 'custom':
                     var customRange = calculateCustomRange();
                     if (customRange) {
                         var s = new Date(customRange.start);
                         var e = new Date(customRange.end);
-                        return s.getDate() + '.' + (s.getMonth() + 1) + '.' + String(s.getFullYear()).slice(-2) +
-                               ' - ' + e.getDate() + '.' + (e.getMonth() + 1) + '.' + String(e.getFullYear()).slice(-2);
+                        return ECOWidgetUtils.format.date(s, 'D.M.YY') + ' - ' + ECOWidgetUtils.format.date(e, 'D.M.YY');
                     }
                     return 'Custom';
             }
@@ -695,13 +706,15 @@
 
             format = format || 'D MMM YYYY';
 
+            // Replace in order from most specific to least specific to avoid partial replacements
             return format
                 .replace('YYYY', d.getFullYear())
                 .replace('YY', String(d.getFullYear()).slice(-2))
                 .replace('MMM', months[d.getMonth()])
                 .replace('MM', String(d.getMonth() + 1).padStart(2, '0'))
+                .replace(/(?<![DYM])M(?!M)/g, String(d.getMonth() + 1))  // M without leading zero
                 .replace('DD', String(d.getDate()).padStart(2, '0'))
-                .replace('D', d.getDate());
+                .replace(/(?<![DYM])D(?!D)/g, String(d.getDate()));  // D without leading zero
         }
     };
 
