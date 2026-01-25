@@ -1,7 +1,20 @@
 {
+  "id": {
+    "entityType": "WIDGETS_BUNDLE",
+    "id": "fbfe6030-f866-11f0-9979-9f3434877bb4"
+  },
+  "createdTime": 1769178164659,
+  "tenantId": {
+    "entityType": "TENANT",
+    "id": "efb63c10-b576-11ee-a6c2-a149ed03c64d"
+  },
   "alias": "eco_custom_widgets",
   "title": "ECO Custom Widgets",
-  "description": "Custom widgets for ECO Smart Diagnostics - includes Load Duration Curve chart and Synchronized Zoom Time Series",
   "image": null,
-  "order": 0
+  "scada": false,
+  "description": "Custom widgets for ECO Smart Diagnostics - includes Load Duration Curve chart and Synchronized Zoom Time Series",
+  "order": 0,
+  "externalId": null,
+  "version": 5,
+  "name": "ECO Custom Widgets"
 }

@@ -16,9 +16,9 @@
         "url": "https://cdn.jsdelivr.net/gh/JiriD85/ECO-TB-Custom-Widgets@main/widgets/resources/eco-widget-utils.js"
       }
     ],
-    "templateHtml": "<div id=\"chart-container\" style=\"width: 100%; height: 100%;\"></div>",
-    "templateCss": "#chart-container { position: relative; }",
-    "controllerScript": "var chart = null;\nvar chartContainer = null;\nvar zoomDebounceTimer = null;\nvar isExternalUpdate = false;\n\n// ECO Widget Utils reference\nvar utils = null;\n\nself.onInit = function() {\n    chartContainer = self.ctx.$container.find('#chart-container')[0];\n    if (!chartContainer) {\n        console.error('Chart container not found');\n        return;\n    }\n    \n    if (typeof echarts === 'undefined') {\n        console.error('ECharts not loaded');\n        return;\n    }\n    \n    // Initialize ECO Widget Utils\n    utils = window.ECOWidgetUtils;\n    if (!utils) {\n        console.warn('ECOWidgetUtils not loaded, some features may be unavailable');\n    }\n    \n    chart = echarts.init(chartContainer);\n    \n    var settings = self.ctx.settings || {};\n    var showTimewindowSelector = settings.showTimewindowSelector === true;\n\n    // Initialize timewindow selector using library\n    if (showTimewindowSelector && utils && utils.timewindow) {\n        var twContainer = self.ctx.$container.find('#timewindow-selector')[0];\n        if (twContainer) {\n            utils.timewindow.init(twContainer, {\n                color: settings.twSelectorColor || '',\n                position: settings.twSelectorPosition || 'center',\n                dayFormat: settings.twSelectorDayFormat || 'D MMM YYYY',\n                weekFormat: settings.twSelectorWeekFormat || 'D-D MMM',\n                monthFormat: settings.twSelectorMonthFormat || 'MMM YYYY',\n                customStartTime: settings.twCustomStartTime || '',\n                customEndTime: settings.twCustomEndTime || '',\n                aggregationType: settings.twAggregationType || 'NONE',\n                maxDataPoints: settings.twMaxDataPoints || 100000\n            }, self.ctx);\n            utils.timewindow.render();\n        }\n    }\n\n    if (settings.enableZoomSync !== false) {\n        chart.on('datazoom', handleZoomSync);\n    }\n    \n    updateChart();\n};\n\nfunction handleZoomSync(params) {\n    if (isExternalUpdate) return;\n    \n    var settings = self.ctx.settings || {};\n    if (settings.enableZoomSync === false) return;\n    \n    var debounceMs = settings.zoomSyncDebounce || 150;\n    \n    if (zoomDebounceTimer) {\n        clearTimeout(zoomDebounceTimer);\n    }\n    \n    zoomDebounceTimer = setTimeout(function() {\n        var option = chart.getOption();\n        var dataZoom = option.dataZoom && option.dataZoom[0];\n        if (!dataZoom) return;\n        \n        var timeWindow = self.ctx.timeWindow;\n        if (!timeWindow) return;\n        \n        var totalRange = timeWindow.maxTime - timeWindow.minTime;\n        var startPercent = dataZoom.start || 0;\n        var endPercent = dataZoom.end || 100;\n        \n        if (startPercent > 0.5 || endPercent < 99.5) {\n            var startTime = Math.round(timeWindow.minTime + (totalRange * startPercent / 100));\n            var endTime = Math.round(timeWindow.minTime + (totalRange * endPercent / 100));\n            \n            if (self.ctx.dashboard && self.ctx.dashboard.onUpdateTimewindow) {\n                self.ctx.dashboard.onUpdateTimewindow(startTime, endTime);\n            }\n        }\n    }, debounceMs);\n}\n\nself.onDataUpdated = function() {\n    isExternalUpdate = true;\n    updateChart();\n    setTimeout(function() { isExternalUpdate = false; }, 100);\n};\n\nfunction updateChart() {\n    if (!chart) return;\n    \n    var settings = self.ctx.settings || {};\n    var upColor = settings.upColor || '#26A69A';\n    var downColor = settings.downColor || '#EF5350';\n    var upBorderColor = settings.upBorderColor || '#26A69A';\n    var downBorderColor = settings.downBorderColor || '#EF5350';\n    var showMA = settings.showMA || false;\n    var maPeriod = settings.maPeriod || 5;\n    var maColor = settings.maColor || '#FF9800';\n    var showDataZoomSlider = settings.showDataZoomSlider !== false;\n    var showLegend = settings.showLegend !== false;\n    var showTooltip = settings.showTooltip !== false;\n    var enableExport = settings.enableExport !== false;\n    \n    var data = self.ctx.data || [];\n    if (!data.length) {\n        chart.setOption({\n            title: { text: 'No data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    // Find open, high, low, close data keys\n    var openData = null, highData = null, lowData = null, closeData = null;\n    \n    for (var i = 0; i < data.length; i++) {\n        var ds = data[i];\n        var keyName = ((ds.dataKey && ds.dataKey.name) || '').toLowerCase();\n        var keyLabel = ((ds.dataKey && ds.dataKey.label) || '').toLowerCase();\n        \n        if (keyName === 'open' || keyLabel === 'open') openData = ds;\n        else if (keyName === 'high' || keyLabel === 'high') highData = ds;\n        else if (keyName === 'low' || keyLabel === 'low') lowData = ds;\n        else if (keyName === 'close' || keyLabel === 'close') closeData = ds;\n    }\n    \n    // Fallback: use first 4 series as open, high, low, close\n    if ((!openData || !highData || !lowData || !closeData) && data.length >= 4) {\n        openData = data[0];\n        highData = data[1];\n        lowData = data[2];\n        closeData = data[3];\n    }\n    \n    if (!openData || !closeData) {\n        chart.setOption({\n            title: { text: 'Need open, high, low, close data keys', left: 'center', top: 'middle', textStyle: { fontSize: 12 } }\n        });\n        return;\n    }\n    \n    // Build candlestick data: ECharts format is [open, close, low, high]\n    var candleData = [];\n    var categoryData = [];\n    var openMap = {}, highMap = {}, lowMap = {}, closeMap = {};\n    \n    if (openData && openData.data) openData.data.forEach(function(d) { openMap[d[0]] = d[1]; });\n    if (highData && highData.data) highData.data.forEach(function(d) { highMap[d[0]] = d[1]; });\n    if (lowData && lowData.data) lowData.data.forEach(function(d) { lowMap[d[0]] = d[1]; });\n    if (closeData && closeData.data) closeData.data.forEach(function(d) { closeMap[d[0]] = d[1]; });\n    \n    // Get all unique timestamps\n    var timestamps = {};\n    [openData, highData, lowData, closeData].forEach(function(ds) {\n        if (ds && ds.data) {\n            ds.data.forEach(function(d) { timestamps[d[0]] = true; });\n        }\n    });\n    \n    var sortedTimestamps = Object.keys(timestamps).map(Number).sort(function(a, b) { return a - b; });\n    \n    sortedTimestamps.forEach(function(ts) {\n        var o = openMap[ts], h = highMap[ts], l = lowMap[ts], c = closeMap[ts];\n        if (o !== undefined && c !== undefined) {\n            h = h !== undefined ? h : Math.max(o, c);\n            l = l !== undefined ? l : Math.min(o, c);\n            // Use library for timestamp formatting if available\n            var formattedTs = utils && utils.format ? utils.format.timestamp(ts, 'YYYY-MM-DD HH:mm') : new Date(ts).toLocaleString();\n            categoryData.push(formattedTs);\n            candleData.push([o, c, l, h]);\n        }\n    });\n    \n    if (candleData.length === 0) {\n        chart.setOption({\n            title: { text: 'No valid OHLC data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    var series = [{\n        name: 'Candlestick',\n        type: 'candlestick',\n        data: candleData,\n        itemStyle: {\n            color: upColor,\n            color0: downColor,\n            borderColor: upBorderColor,\n            borderColor0: downBorderColor\n        }\n    }];\n    \n    var legendData = ['Candlestick'];\n    \n    // Calculate Moving Average if enabled - using library stats\n    if (showMA && maPeriod > 0 && candleData.length >= maPeriod) {\n        var maData = [];\n        for (var i = 0; i < candleData.length; i++) {\n            if (i < maPeriod - 1) {\n                maData.push('-');\n            } else {\n                // Extract close prices for the window\n                var windowValues = [];\n                for (var j = 0; j < maPeriod; j++) {\n                    windowValues.push(candleData[i - j][1]); // close price\n                }\n                // Use library for statistics calculation\n                if (utils && utils.stats) {\n                    var stats = utils.stats.calculate(windowValues);\n                    maData.push(utils.format.value(stats.mean, 2));\n                } else {\n                    // Fallback calculation\n                    var sum = 0;\n                    for (var k = 0; k < windowValues.length; k++) {\n                        sum += windowValues[k];\n                    }\n                    maData.push((sum / maPeriod).toFixed(2));\n                }\n            }\n        }\n        \n        series.push({\n            name: 'MA' + maPeriod,\n            type: 'line',\n            data: maData,\n            smooth: true,\n            symbol: 'none',\n            lineStyle: { color: maColor, width: 2 }\n        });\n        legendData.push('MA' + maPeriod);\n    }\n    \n    var option = {\n        tooltip: showTooltip ? {\n            trigger: 'axis',\n            axisPointer: { type: 'cross' },\n            formatter: function(params) {\n                if (!params || !params.length) return '';\n                var result = params[0].axisValue + '<br/>';\n                for (var i = 0; i < params.length; i++) {\n                    var p = params[i];\n                    if (p.seriesType === 'candlestick' && p.data) {\n                        // Use library for value formatting\n                        var formatVal = utils && utils.format ? function(v) { return utils.format.value(v, 2); } : function(v) { return String(v); };\n                        result += 'Open: ' + formatVal(p.data[1]) + '<br/>';\n                        result += 'Close: ' + formatVal(p.data[2]) + '<br/>';\n                        result += 'Low: ' + formatVal(p.data[3]) + '<br/>';\n                        result += 'High: ' + formatVal(p.data[4]) + '<br/>';\n                    } else if (p.seriesType === 'line' && p.data !== '-') {\n                        result += p.seriesName + ': ' + p.data + '<br/>';\n                    }\n                }\n                return result;\n            }\n        } : {},\n        legend: showLegend ? {\n            data: legendData,\n            top: 5\n        } : {},\n        toolbox: enableExport ? {\n            feature: {\n                saveAsImage: { title: 'Save as PNG' },\n                dataView: { title: 'Data View', readOnly: true }\n            },\n            right: 10\n        } : {},\n        grid: {\n            left: 60,\n            right: enableExport ? 80 : 20,\n            top: showLegend ? 40 : 20,\n            bottom: showDataZoomSlider ? 60 : 40\n        },\n        xAxis: {\n            type: 'category',\n            data: categoryData,\n            axisLabel: { fontSize: 9, rotate: 30 },\n            splitLine: { show: false }\n        },\n        yAxis: {\n            type: 'value',\n            scale: true,\n            axisLabel: { fontSize: 10 },\n            splitLine: { lineStyle: { type: 'dashed', opacity: 0.3 } }\n        },\n        dataZoom: [\n            { type: 'inside', xAxisIndex: 0 },\n            showDataZoomSlider ? { type: 'slider', xAxisIndex: 0, bottom: 5, height: 20 } : null\n        ].filter(function(x) { return x !== null; }),\n        series: series\n    };\n    \n    chart.setOption(option, true);\n}\n\nself.onResize = function() {\n    if (chart) {\n        chart.resize();\n    }\n};\n\nself.onDestroy = function() {\n    if (chart) {\n        chart.off('datazoom');\n        chart.dispose();\n        chart = null;\n    }\n    if (zoomDebounceTimer) {\n        clearTimeout(zoomDebounceTimer);\n    }\n};\n\nself.typeParameters = function() {\n    return {\n        previewWidth: '80%',\n        embedTitlePanel: true,\n        dataKeySettingsFunction: function() { return {}; },\n        defaultDataKeysFunction: function() {\n            return [\n                { name: 'open', label: 'Open', type: 'timeseries' },\n                { name: 'high', label: 'High', type: 'timeseries' },\n                { name: 'low', label: 'Low', type: 'timeseries' },\n                { name: 'close', label: 'Close', type: 'timeseries' }\n            ];\n        }\n    };\n};\n",
+    "templateHtml": "<div id=\"widget-wrapper\" style=\"width: 100%; height: 100%; display: flex; flex-direction: column;\">\n  <div id=\"timewindow-selector\" style=\"display: none;\"></div>\n  <div id=\"stats-card-top\" style=\"padding: 4px 8px; display: none;\"></div>\n  <div style=\"flex: 1; min-height: 0; display: flex;\">\n    <div id=\"stats-card-left\" style=\"padding: 4px; display: none;\"></div>\n    <div id=\"chart-container\" style=\"flex: 1; min-height: 0;\"></div>\n    <div id=\"stats-card-right\" style=\"padding: 4px; display: none;\"></div>\n  </div>\n  <div id=\"stats-card-bottom\" style=\"padding: 4px 8px; display: none;\"></div>\n</div>",
+    "templateCss": "#widget-wrapper { position: relative; }\n#chart-container { position: relative; }",
+    "controllerScript": "/**\n * ECO Candlestick Basic Widget (Library Version)\n *\n * OHLC Candlestick chart with Moving Average overlay,\n * statistics cards, data processing, and timewindow selector.\n *\n * Uses ECOWidgetUtils library for common functionality.\n */\n\nvar utils = window.ECOWidgetUtils;\n\nvar chart = null;\nvar chartContainer = null;\nvar statsCardContainers = {};\nvar timewindowSelectorContainer = null;\nvar resizeObserver = null;\nvar zoomDebounceTimer = null;\nvar isExternalUpdate = false;\n\nself.onInit = function() {\n    chartContainer = self.ctx.$container.find('#chart-container')[0];\n    timewindowSelectorContainer = self.ctx.$container.find('#timewindow-selector')[0];\n    statsCardContainers = {\n        top: self.ctx.$container.find('#stats-card-top')[0],\n        bottom: self.ctx.$container.find('#stats-card-bottom')[0],\n        left: self.ctx.$container.find('#stats-card-left')[0],\n        right: self.ctx.$container.find('#stats-card-right')[0]\n    };\n\n    if (!chartContainer) {\n        console.error('ECO Candlestick Basic: Chart container not found');\n        return;\n    }\n\n    if (typeof echarts === 'undefined') {\n        console.error('ECO Candlestick Basic: ECharts library not loaded');\n        return;\n    }\n\n    if (!utils) {\n        console.error('ECO Candlestick Basic: ECOWidgetUtils library not loaded');\n        return;\n    }\n\n    chart = echarts.init(chartContainer);\n\n    var settings = self.ctx.settings || {};\n    if (settings.enableZoomSync !== false) {\n        chart.on('datazoom', handleZoomSync);\n    }\n\n    updateChart();\n\n    // Multiple delayed resizes for ThingsBoard's async layout\n    [100, 250, 500, 1000].forEach(function(delay) {\n        setTimeout(function() {\n            if (chart && chartContainer) {\n                chart.resize({\n                    width: chartContainer.offsetWidth,\n                    height: chartContainer.offsetHeight\n                });\n            }\n        }, delay);\n    });\n\n    // ResizeObserver for dynamic container changes\n    if (typeof ResizeObserver !== 'undefined') {\n        resizeObserver = new ResizeObserver(function() {\n            requestAnimationFrame(function() {\n                if (chart && chartContainer) {\n                    chart.resize({\n                        width: chartContainer.offsetWidth,\n                        height: chartContainer.offsetHeight\n                    });\n                }\n            });\n        });\n        resizeObserver.observe(chartContainer);\n    }\n};\n\nfunction handleZoomSync(params) {\n    if (isExternalUpdate) return;\n\n    var settings = self.ctx.settings || {};\n    if (settings.enableZoomSync === false) return;\n\n    var debounceMs = settings.zoomSyncDebounce || 150;\n\n    if (zoomDebounceTimer) {\n        clearTimeout(zoomDebounceTimer);\n    }\n\n    zoomDebounceTimer = setTimeout(function() {\n        var option = chart.getOption();\n        var dataZoom = option.dataZoom && option.dataZoom[0];\n        if (!dataZoom) return;\n\n        var timeWindow = self.ctx.timeWindow;\n        if (!timeWindow) return;\n\n        var totalRange = timeWindow.maxTime - timeWindow.minTime;\n        var startPercent = dataZoom.start || 0;\n        var endPercent = dataZoom.end || 100;\n\n        if (startPercent > 0.5 || endPercent < 99.5) {\n            var startTime = Math.round(timeWindow.minTime + (totalRange * startPercent / 100));\n            var endTime = Math.round(timeWindow.minTime + (totalRange * endPercent / 100));\n\n            if (self.ctx.dashboard && self.ctx.dashboard.onUpdateTimewindow) {\n                self.ctx.dashboard.onUpdateTimewindow(startTime, endTime);\n            }\n        }\n    }, debounceMs);\n}\n\nself.onDataUpdated = function() {\n    isExternalUpdate = true;\n    updateChart();\n    setTimeout(function() { isExternalUpdate = false; }, 100);\n};\n\nfunction updateChart() {\n    if (!chart) return;\n\n    var settings = self.ctx.settings || {};\n    var data = self.ctx.data || [];\n\n    // Candlestick colors\n    var upColor = settings.upColor || '#26A69A';\n    var downColor = settings.downColor || '#EF5350';\n    var upBorderColor = settings.upBorderColor || '#26A69A';\n    var downBorderColor = settings.downBorderColor || '#EF5350';\n\n    // Moving Average settings\n    var showMA = settings.showMA || false;\n    var maPeriod = settings.maPeriod || 5;\n    var maColor = settings.maColor || '#FF9800';\n\n    // Legend settings\n    var showLegend = settings.showLegend !== false;\n    var legendStyle = settings.legendStyle || 'classic';\n    var legendPosition = settings.legendPosition || 'bottom';\n    var legendAlign = settings.legendAlign || 'center';\n    var legendCardColorMode = settings.legendCardColorMode || 'auto';\n    var legendCardColor = settings.legendCardColor || '#2196F3';\n    var legendValues = settings.legendValues || ['current'];\n\n    // Timestamp settings\n    var showTimestamp = settings.showTimestamp !== false;\n    var timestampFormat = settings.timestampFormat || 'YYYY-MM-DD HH:mm:ss';\n\n    // DataZoom settings\n    var showDataZoomSlider = settings.showDataZoomSlider !== false;\n\n    // Outlier removal settings\n    var removeOutliers = settings.removeOutliers === true;\n    var outlierMethod = settings.outlierMethod || 'iqr';\n    var outlierIqrMultiplier = settings.outlierIqrMultiplier || 1.5;\n    var outlierZscoreThreshold = settings.outlierZscoreThreshold || 3;\n    var outlierMinValue = settings.outlierMinValue;\n    var outlierMaxValue = settings.outlierMaxValue;\n\n    // Smoothing settings\n    var smoothingEnabled = settings.smoothingEnabled === true;\n    var smoothingWindowMinutes = settings.smoothingWindowMinutes || 15;\n\n    // Toolbox settings\n    var showToolbox = settings.showToolbox !== false;\n    var toolboxFeatures = settings.toolboxFeatures || ['saveAsImage', 'dataView', 'dataZoom', 'restore'];\n\n    // Timewindow selector settings\n    var showTimewindowSelector = settings.showTimewindowSelector === true;\n\n    // Initialize and render timewindow selector using library\n    if (showTimewindowSelector && self.ctx.dashboard && timewindowSelectorContainer) {\n        utils.timewindow.init(timewindowSelectorContainer, {\n            color: settings.twSelectorColor || '',\n            position: settings.twSelectorPosition || 'center',\n            dayFormat: settings.twSelectorDayFormat || 'D MMM YYYY',\n            weekFormat: settings.twSelectorWeekFormat || 'D-D MMM',\n            monthFormat: settings.twSelectorMonthFormat || 'MMM YYYY',\n            customStartTime: settings.twCustomStartTime || '',\n            customEndTime: settings.twCustomEndTime || '',\n            aggregationType: settings.twAggregationType || 'NONE',\n            maxDataPoints: settings.twMaxDataPoints || 100000\n        }, self.ctx);\n        utils.timewindow.render();\n    } else if (timewindowSelectorContainer) {\n        utils.timewindow.hide();\n    }\n\n    // Check for valid data\n    if (!data.length) {\n        showNoData('No data available');\n        return;\n    }\n\n    // Find open, high, low, close data keys\n    var openData = null, highData = null, lowData = null, closeData = null;\n\n    for (var i = 0; i < data.length; i++) {\n        var ds = data[i];\n        var keyName = ((ds.dataKey && ds.dataKey.name) || '').toLowerCase();\n        var keyLabel = ((ds.dataKey && ds.dataKey.label) || '').toLowerCase();\n\n        if (keyName === 'open' || keyLabel === 'open') openData = ds;\n        else if (keyName === 'high' || keyLabel === 'high') highData = ds;\n        else if (keyName === 'low' || keyLabel === 'low') lowData = ds;\n        else if (keyName === 'close' || keyLabel === 'close') closeData = ds;\n    }\n\n    // Fallback: use first 4 series as open, high, low, close\n    if ((!openData || !highData || !lowData || !closeData) && data.length >= 4) {\n        openData = data[0];\n        highData = data[1];\n        lowData = data[2];\n        closeData = data[3];\n    }\n\n    if (!openData || !closeData) {\n        showNoData('Need open, high, low, close data keys');\n        return;\n    }\n\n    // Build OHLC data maps\n    var openMap = {}, highMap = {}, lowMap = {}, closeMap = {};\n\n    if (openData && openData.data) openData.data.forEach(function(d) { openMap[d[0]] = d[1]; });\n    if (highData && highData.data) highData.data.forEach(function(d) { highMap[d[0]] = d[1]; });\n    if (lowData && lowData.data) lowData.data.forEach(function(d) { lowMap[d[0]] = d[1]; });\n    if (closeData && closeData.data) closeData.data.forEach(function(d) { closeMap[d[0]] = d[1]; });\n\n    // Get all unique timestamps\n    var timestamps = {};\n    [openData, highData, lowData, closeData].forEach(function(ds) {\n        if (ds && ds.data) {\n            ds.data.forEach(function(d) { timestamps[d[0]] = true; });\n        }\n    });\n\n    var sortedTimestamps = Object.keys(timestamps).map(Number).sort(function(a, b) { return a - b; });\n\n    // Build candlestick data with optional outlier removal\n    var candleData = [];\n    var categoryData = [];\n    var closeValues = [];\n    var lastCloseValue = null;\n    var lastTimestamp = null;\n\n    sortedTimestamps.forEach(function(ts) {\n        var o = openMap[ts], h = highMap[ts], l = lowMap[ts], c = closeMap[ts];\n        if (o !== undefined && c !== undefined) {\n            h = h !== undefined ? h : Math.max(o, c);\n            l = l !== undefined ? l : Math.min(o, c);\n\n            // Apply outlier removal to close values if enabled\n            if (removeOutliers) {\n                var testValues = [c];\n                var testTimestamps = [ts];\n                var outlierResult = utils.dataProcessing.removeOutliers(testValues, testTimestamps, {\n                    method: outlierMethod,\n                    iqrMultiplier: outlierIqrMultiplier,\n                    zscoreThreshold: outlierZscoreThreshold,\n                    minValue: outlierMinValue,\n                    maxValue: outlierMaxValue\n                });\n                if (outlierResult.values.length === 0) {\n                    return; // Skip this data point\n                }\n            }\n\n            var formattedTs = utils.format.timestamp(ts, 'YYYY-MM-DD HH:mm');\n            categoryData.push(formattedTs);\n            candleData.push([o, c, l, h]);\n            closeValues.push(c);\n            lastCloseValue = c;\n            lastTimestamp = ts;\n        }\n    });\n\n    if (candleData.length === 0) {\n        showNoData('No valid OHLC data');\n        return;\n    }\n\n    // Apply smoothing to close values if enabled (for MA calculation)\n    var smoothedCloseValues = closeValues.slice();\n    if (smoothingEnabled && smoothingWindowMinutes > 0 && sortedTimestamps.length > 1) {\n        var windowSize = utils.dataProcessing.getWindowSizeFromMinutes(sortedTimestamps, smoothingWindowMinutes);\n        smoothedCloseValues = utils.dataProcessing.movingAverage(closeValues, windowSize);\n    }\n\n    // Build series\n    var series = [{\n        name: 'Candlestick',\n        type: 'candlestick',\n        data: candleData,\n        itemStyle: {\n            color: upColor,\n            color0: downColor,\n            borderColor: upBorderColor,\n            borderColor0: downBorderColor\n        }\n    }];\n\n    var legendData = ['Candlestick'];\n\n    // Calculate Moving Average if enabled\n    if (showMA && maPeriod > 0 && candleData.length >= maPeriod) {\n        var maData = [];\n        for (var i = 0; i < smoothedCloseValues.length; i++) {\n            if (i < maPeriod - 1) {\n                maData.push('-');\n            } else {\n                var windowValues = [];\n                for (var j = 0; j < maPeriod; j++) {\n                    windowValues.push(smoothedCloseValues[i - j]);\n                }\n                var stats = utils.stats.calculate(windowValues);\n                maData.push(utils.format.value(stats.mean, 2));\n            }\n        }\n\n        series.push({\n            name: 'MA' + maPeriod,\n            type: 'line',\n            data: maData,\n            smooth: true,\n            symbol: 'none',\n            lineStyle: { color: maColor, width: 2 }\n        });\n        legendData.push('MA' + maPeriod);\n    }\n\n    // Calculate statistics for stats card\n    var closeStats = utils.stats.calculate(closeValues);\n    closeStats.current = lastCloseValue;\n    closeStats.lastTimestamp = lastTimestamp;\n\n    var allStats = [{\n        label: 'Close',\n        units: '',\n        decimals: 2,\n        color: upColor,\n        stats: closeStats\n    }];\n\n    // Build ECharts option\n    var option = buildChartOption({\n        series: series,\n        legendData: legendData,\n        categoryData: categoryData,\n        showLegend: showLegend && legendStyle === 'classic',\n        showDataZoomSlider: showDataZoomSlider,\n        showToolbox: showToolbox,\n        toolboxFeatures: toolboxFeatures\n    });\n\n    chart.setOption(option, true);\n\n    // Render statistics cards using library\n    utils.statsCard.render(statsCardContainers, {\n        showLegend: showLegend,\n        legendStyle: legendStyle,\n        legendAlign: legendAlign,\n        legendCardColorMode: legendCardColorMode,\n        legendCardColor: legendCardColor,\n        legendValues: legendValues,\n        legendPosition: legendPosition,\n        showTimestamp: showTimestamp,\n        timestampFormat: timestampFormat,\n        allStats: allStats\n    });\n\n    // Resize chart after stats cards\n    function doResize() {\n        if (chart && chartContainer) {\n            chart.resize({\n                width: chartContainer.offsetWidth,\n                height: chartContainer.offsetHeight\n            });\n        }\n    }\n    requestAnimationFrame(function() { requestAnimationFrame(doResize); });\n    setTimeout(doResize, 100);\n    setTimeout(doResize, 250);\n}\n\nfunction showNoData(message) {\n    if (!chart) return;\n    chart.setOption({\n        title: {\n            text: message,\n            left: 'center',\n            top: 'middle',\n            textStyle: { color: '#999', fontSize: 14 }\n        }\n    }, true);\n}\n\nfunction buildChartOption(config) {\n    var showLegend = config.showLegend;\n    var legendData = config.legendData;\n\n    var topMargin = showLegend ? 40 : 20;\n    var bottomMargin = config.showDataZoomSlider ? 60 : 40;\n    var rightMargin = config.showToolbox ? 80 : 20;\n\n    // Build toolbox config\n    var toolboxConfig = null;\n    if (config.showToolbox) {\n        var features = config.toolboxFeatures || [];\n        toolboxConfig = { show: true, right: 10, top: 5, feature: {} };\n\n        if (features.indexOf('saveAsImage') !== -1) {\n            toolboxConfig.feature.saveAsImage = { show: true, title: 'Save as PNG', pixelRatio: 2 };\n        }\n        if (features.indexOf('dataView') !== -1) {\n            toolboxConfig.feature.dataView = { show: true, title: 'Data View', readOnly: true };\n        }\n        if (features.indexOf('dataZoom') !== -1) {\n            toolboxConfig.feature.dataZoom = { show: true, title: { zoom: 'Zoom', back: 'Reset Zoom' } };\n        }\n        if (features.indexOf('restore') !== -1) {\n            toolboxConfig.feature.restore = { show: true, title: 'Restore' };\n        }\n    }\n\n    return {\n        tooltip: {\n            trigger: 'axis',\n            axisPointer: { type: 'cross' },\n            formatter: function(params) {\n                if (!params || !params.length) return '';\n                var result = params[0].axisValue + '<br/>';\n                for (var i = 0; i < params.length; i++) {\n                    var p = params[i];\n                    if (p.seriesType === 'candlestick' && p.data) {\n                        result += 'Open: ' + utils.format.value(p.data[1], 2) + '<br/>';\n                        result += 'Close: ' + utils.format.value(p.data[2], 2) + '<br/>';\n                        result += 'Low: ' + utils.format.value(p.data[3], 2) + '<br/>';\n                        result += 'High: ' + utils.format.value(p.data[4], 2) + '<br/>';\n                    } else if (p.seriesType === 'line' && p.data !== '-') {\n                        result += p.seriesName + ': ' + p.data + '<br/>';\n                    }\n                }\n                return result;\n            }\n        },\n        legend: showLegend ? {\n            data: legendData,\n            top: 5\n        } : null,\n        toolbox: toolboxConfig,\n        grid: {\n            left: 60,\n            right: rightMargin,\n            top: topMargin,\n            bottom: bottomMargin\n        },\n        xAxis: {\n            type: 'category',\n            data: config.categoryData,\n            axisLabel: { fontSize: 9, rotate: 30 },\n            splitLine: { show: false }\n        },\n        yAxis: {\n            type: 'value',\n            scale: true,\n            axisLabel: { fontSize: 10 },\n            splitLine: { lineStyle: { type: 'dashed', opacity: 0.3 } }\n        },\n        dataZoom: [\n            { type: 'inside', xAxisIndex: 0 },\n            config.showDataZoomSlider ? { type: 'slider', xAxisIndex: 0, bottom: 5, height: 20 } : null\n        ].filter(function(x) { return x !== null; }),\n        series: config.series\n    };\n}\n\nself.onResize = function() {\n    if (chart && chartContainer) {\n        chart.resize({\n            width: chartContainer.offsetWidth,\n            height: chartContainer.offsetHeight\n        });\n    }\n};\n\nself.onDestroy = function() {\n    if (resizeObserver) {\n        resizeObserver.disconnect();\n        resizeObserver = null;\n    }\n    if (chart) {\n        chart.off('datazoom');\n        chart.dispose();\n        chart = null;\n    }\n    if (zoomDebounceTimer) {\n        clearTimeout(zoomDebounceTimer);\n    }\n};\n\nself.typeParameters = function() {\n    return {\n        previewWidth: '100%',\n        previewHeight: '100%',\n        embedTitlePanel: false,\n        hasDataExportAction: true,\n        dataKeySettingsFunction: function() { return {}; },\n        defaultDataKeysFunction: function() {\n            return [\n                { name: 'open', label: 'Open', type: 'timeseries' },\n                { name: 'high', label: 'High', type: 'timeseries' },\n                { name: 'low', label: 'Low', type: 'timeseries' },\n                { name: 'close', label: 'Close', type: 'timeseries' }\n            ];\n        }\n    };\n};\n",
     "settingsSchema": {
       "schema": {
         "type": "object",
@@ -82,79 +82,6 @@
             "title": "Show Legend",
             "type": "boolean",
             "default": true
-          },
-          "showTooltip": {
-            "title": "Show Tooltip",
-            "type": "boolean",
-            "default": true
-          },
-          "enableExport": {
-            "title": "Enable Export (PNG/Data)",
-            "type": "boolean",
-            "default": true
-          },
-          "showTimewindowSelector": {
-            "title": "Show Timewindow Selector",
-            "type": "boolean",
-            "default": false
-          },
-          "twSelectorColor": {
-            "title": "Selector Color",
-            "type": "string",
-            "default": ""
-          },
-          "twSelectorPosition": {
-            "title": "Selector Position",
-            "type": "string",
-            "default": "center",
-            "enum": [
-              "left",
-              "center",
-              "right"
-            ]
-          },
-          "twSelectorDayFormat": {
-            "title": "Day Format",
-            "type": "string",
-            "default": "D MMM YYYY"
-          },
-          "twSelectorWeekFormat": {
-            "title": "Week Format",
-            "type": "string",
-            "default": "D-D MMM"
-          },
-          "twSelectorMonthFormat": {
-            "title": "Month Format",
-            "type": "string",
-            "default": "MMM YYYY"
-          },
-          "twCustomStartTime": {
-            "title": "Custom Start Time",
-            "type": "string",
-            "default": ""
-          },
-          "twCustomEndTime": {
-            "title": "Custom End Time",
-            "type": "string",
-            "default": ""
-          },
-          "twAggregationType": {
-            "title": "Aggregation",
-            "type": "string",
-            "default": "NONE",
-            "enum": [
-              "NONE",
-              "AVG",
-              "MIN",
-              "MAX",
-              "SUM",
-              "COUNT"
-            ]
-          },
-          "twMaxDataPoints": {
-            "title": "Max Data Points",
-            "type": "number",
-            "default": 100000
           },
           "legendStyle": {
             "title": "Legend Style",
@@ -281,51 +208,427 @@
               "dataZoom",
               "restore"
             ]
+          },
+          "showTimewindowSelector": {
+            "title": "Show Timewindow Selector",
+            "type": "boolean",
+            "default": false
+          },
+          "twSelectorColor": {
+            "title": "Selector Color",
+            "type": "string",
+            "default": ""
+          },
+          "twSelectorPosition": {
+            "title": "Selector Position",
+            "type": "string",
+            "default": "center",
+            "enum": [
+              "left",
+              "center",
+              "right"
+            ]
+          },
+          "twSelectorDayFormat": {
+            "title": "Day Format",
+            "type": "string",
+            "default": "D MMM YYYY"
+          },
+          "twSelectorWeekFormat": {
+            "title": "Week Format",
+            "type": "string",
+            "default": "D-D MMM"
+          },
+          "twSelectorMonthFormat": {
+            "title": "Month Format",
+            "type": "string",
+            "default": "MMM YYYY"
+          },
+          "twCustomStartTime": {
+            "title": "Custom Start Time",
+            "type": "string",
+            "default": ""
+          },
+          "twCustomEndTime": {
+            "title": "Custom End Time",
+            "type": "string",
+            "default": ""
+          },
+          "twAggregationType": {
+            "title": "Aggregation",
+            "type": "string",
+            "default": "NONE",
+            "enum": [
+              "NONE",
+              "AVG",
+              "MIN",
+              "MAX",
+              "SUM",
+              "COUNT"
+            ]
+          },
+          "twMaxDataPoints": {
+            "title": "Max Data Points",
+            "type": "number",
+            "default": 100000
           }
         },
         "required": []
       },
       "form": [
-        "enableZoomSync",
+        [
+          "enableZoomSync",
+          {
+            "key": "zoomSyncDebounce",
+            "condition": "model.enableZoomSync === true"
+          },
+          "showDataZoomSlider",
+          {
+            "key": "upColor",
+            "type": "color"
+          },
+          {
+            "key": "downColor",
+            "type": "color"
+          },
+          {
+            "key": "upBorderColor",
+            "type": "color"
+          },
+          {
+            "key": "downBorderColor",
+            "type": "color"
+          },
+          "showMA",
+          {
+            "key": "maPeriod",
+            "condition": "model.showMA === true"
+          },
+          {
+            "key": "maColor",
+            "type": "color",
+            "condition": "model.showMA === true"
+          }
+        ],
+        [
+          "showLegend",
+          {
+            "key": "legendStyle",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showLegend === true",
+            "items": [
+              {
+                "value": "classic",
+                "label": "Classic (Text)"
+              },
+              {
+                "value": "card",
+                "label": "Statistics Card"
+              }
+            ]
+          },
+          {
+            "key": "legendPosition",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showLegend === true",
+            "items": [
+              {
+                "value": "top",
+                "label": "Top"
+              },
+              {
+                "value": "bottom",
+                "label": "Bottom"
+              },
+              {
+                "value": "left",
+                "label": "Left"
+              },
+              {
+                "value": "right",
+                "label": "Right"
+              }
+            ]
+          },
+          {
+            "key": "legendAlign",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showLegend === true && model.legendStyle === 'card'",
+            "items": [
+              {
+                "value": "left",
+                "label": "Left"
+              },
+              {
+                "value": "center",
+                "label": "Center"
+              },
+              {
+                "value": "right",
+                "label": "Right"
+              }
+            ]
+          },
+          {
+            "key": "legendCardColorMode",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showLegend === true && model.legendStyle === 'card'",
+            "items": [
+              {
+                "value": "auto",
+                "label": "Auto (Series Color)"
+              },
+              {
+                "value": "manual",
+                "label": "Manual Color"
+              },
+              {
+                "value": "gradient",
+                "label": "Gradient"
+              }
+            ]
+          },
+          {
+            "key": "legendCardColor",
+            "type": "color",
+            "condition": "model.showLegend === true && model.legendStyle === 'card' && model.legendCardColorMode === 'manual'"
+          },
+          {
+            "key": "legendValues",
+            "type": "rc-select",
+            "multiple": true,
+            "condition": "model.showLegend === true && model.legendStyle === 'card'",
+            "items": [
+              {
+                "value": "current",
+                "label": "Current Value"
+              },
+              {
+                "value": "min",
+                "label": "Minimum"
+              },
+              {
+                "value": "max",
+                "label": "Maximum"
+              },
+              {
+                "value": "mean",
+                "label": "Mean"
+              },
+              {
+                "value": "median",
+                "label": "Median"
+              },
+              {
+                "value": "sum",
+                "label": "Sum"
+              },
+              {
+                "value": "count",
+                "label": "Count"
+              }
+            ]
+          },
+          {
+            "key": "showTimestamp",
+            "condition": "model.showLegend === true && model.legendStyle === 'card'"
+          },
+          {
+            "key": "timestampFormat",
+            "condition": "model.showLegend === true && model.legendStyle === 'card' && model.showTimestamp === true"
+          }
+        ],
+        [
+          "removeOutliers",
+          {
+            "key": "outlierMethod",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.removeOutliers === true",
+            "items": [
+              {
+                "value": "iqr",
+                "label": "IQR (Interquartile Range)"
+              },
+              {
+                "value": "zscore",
+                "label": "Z-Score"
+              },
+              {
+                "value": "manual",
+                "label": "Manual Thresholds"
+              }
+            ]
+          },
+          {
+            "key": "outlierIqrMultiplier",
+            "condition": "model.removeOutliers === true && model.outlierMethod === 'iqr'"
+          },
+          {
+            "key": "outlierZscoreThreshold",
+            "condition": "model.removeOutliers === true && model.outlierMethod === 'zscore'"
+          },
+          {
+            "key": "outlierMinValue",
+            "condition": "model.removeOutliers === true && model.outlierMethod === 'manual'"
+          },
+          {
+            "key": "outlierMaxValue",
+            "condition": "model.removeOutliers === true && model.outlierMethod === 'manual'"
+          },
+          "smoothingEnabled",
+          {
+            "key": "smoothingWindowMinutes",
+            "condition": "model.smoothingEnabled === true"
+          }
+        ],
+        [
+          "showToolbox",
+          {
+            "key": "toolboxFeatures",
+            "type": "rc-select",
+            "multiple": true,
+            "condition": "model.showToolbox === true",
+            "items": [
+              {
+                "value": "saveAsImage",
+                "label": "Save as Image"
+              },
+              {
+                "value": "dataView",
+                "label": "Data View"
+              },
+              {
+                "value": "dataZoom",
+                "label": "Data Zoom"
+              },
+              {
+                "value": "restore",
+                "label": "Restore"
+              }
+            ]
+          }
+        ],
+        [
+          "showTimewindowSelector",
+          {
+            "key": "twSelectorColor",
+            "type": "color",
+            "condition": "model.showTimewindowSelector === true",
+            "description": "Leave empty for auto (uses series color)"
+          },
+          {
+            "key": "twSelectorPosition",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showTimewindowSelector === true",
+            "items": [
+              {
+                "value": "left",
+                "label": "Left"
+              },
+              {
+                "value": "center",
+                "label": "Center"
+              },
+              {
+                "value": "right",
+                "label": "Right"
+              }
+            ]
+          },
+          {
+            "key": "twSelectorDayFormat",
+            "condition": "model.showTimewindowSelector === true",
+            "description": "Format: D=day, DD=day(2), MMM=month, MM=month(2), YYYY=year, YY=year(2)"
+          },
+          {
+            "key": "twSelectorWeekFormat",
+            "condition": "model.showTimewindowSelector === true"
+          },
+          {
+            "key": "twSelectorMonthFormat",
+            "condition": "model.showTimewindowSelector === true"
+          },
+          {
+            "key": "twCustomStartTime",
+            "condition": "model.showTimewindowSelector === true",
+            "description": "Use ${attributeName} for entity attributes, e.g. ${startTimeMs}"
+          },
+          {
+            "key": "twCustomEndTime",
+            "condition": "model.showTimewindowSelector === true",
+            "description": "Use ${attributeName} for entity attributes, e.g. ${endTimeMs}"
+          },
+          {
+            "key": "twAggregationType",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showTimewindowSelector === true",
+            "items": [
+              {
+                "value": "NONE",
+                "label": "None (Raw Data)"
+              },
+              {
+                "value": "AVG",
+                "label": "Average"
+              },
+              {
+                "value": "MIN",
+                "label": "Minimum"
+              },
+              {
+                "value": "MAX",
+                "label": "Maximum"
+              },
+              {
+                "value": "SUM",
+                "label": "Sum"
+              },
+              {
+                "value": "COUNT",
+                "label": "Count"
+              }
+            ]
+          },
+          {
+            "key": "twMaxDataPoints",
+            "condition": "model.showTimewindowSelector === true",
+            "description": "Maximum number of data points to fetch (default: 100000)"
+          }
+        ]
+      ],
+      "groupInfoes": [
         {
-          "key": "zoomSyncDebounce",
-          "condition": "model.enableZoomSync === true"
-        },
-        "showDataZoomSlider",
-        {
-          "key": "upColor",
-          "type": "color"
+          "formIndex": 0,
+          "GroupTitle": "Chart Settings"
         },
         {
-          "key": "downColor",
-          "type": "color"
+          "formIndex": 1,
+          "GroupTitle": "Legend Settings"
         },
         {
-          "key": "upBorderColor",
-          "type": "color"
+          "formIndex": 2,
+          "GroupTitle": "Data Processing"
         },
         {
-          "key": "downBorderColor",
-          "type": "color"
-        },
-        "showMA",
-        {
-          "key": "maPeriod",
-          "condition": "model.showMA === true"
+          "formIndex": 3,
+          "GroupTitle": "Toolbox Settings"
         },
         {
-          "key": "maColor",
-          "type": "color",
-          "condition": "model.showMA === true"
-        },
-        "showLegend",
-        "showTooltip",
-        "enableExport"
+          "formIndex": 4,
+          "GroupTitle": "Timewindow Selector"
+        }
       ]
     },
     "dataKeySettingsSchema": {},
     "latestDataKeySettingsSchema": {},
-    "defaultConfig": "{\"datasources\":[{\"type\":\"function\",\"name\":\"function\",\"dataKeys\":[{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Open\",\"color\":\"#2196f3\",\"settings\":{},\"_hash\":0.1,\"funcBody\":\"var base = 100 + Math.sin(time / 7200000) * 20;\\nreturn base + Math.random() * 5;\",\"units\":\"\",\"decimals\":2},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"High\",\"color\":\"#4CAF50\",\"settings\":{},\"_hash\":0.2,\"funcBody\":\"var base = 100 + Math.sin(time / 7200000) * 20;\\nreturn base + 5 + Math.random() * 10;\",\"units\":\"\",\"decimals\":2},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Low\",\"color\":\"#F44336\",\"settings\":{},\"_hash\":0.3,\"funcBody\":\"var base = 100 + Math.sin(time / 7200000) * 20;\\nreturn base - 5 - Math.random() * 10;\",\"units\":\"\",\"decimals\":2},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Close\",\"color\":\"#FF9800\",\"settings\":{},\"_hash\":0.4,\"funcBody\":\"var base = 100 + Math.sin(time / 7200000) * 20;\\nreturn base + Math.random() * 8 - 4;\",\"units\":\"\",\"decimals\":2}]}],\"timewindow\":{\"hideInterval\":false,\"hideLastInterval\":false,\"hideQuickInterval\":false,\"hideAggregation\":false,\"hideAggInterval\":false,\"hideTimezone\":false,\"selectedTab\":0,\"realtime\":{\"realtimeType\":0,\"timewindowMs\":86400000,\"quickInterval\":\"CURRENT_DAY\",\"interval\":3600000},\"aggregation\":{\"type\":\"AVG\",\"limit\":25000}},\"showTitle\":true,\"backgroundColor\":\"#fff\",\"color\":\"rgba(0, 0, 0, 0.87)\",\"padding\":\"8px\",\"settings\":{\"enableZoomSync\":true,\"zoomSyncDebounce\":150,\"showDataZoomSlider\":true,\"upColor\":\"#26A69A\",\"downColor\":\"#EF5350\",\"upBorderColor\":\"#26A69A\",\"downBorderColor\":\"#EF5350\",\"showMA\":false,\"maPeriod\":5,\"maColor\":\"#FF9800\",\"showLegend\":true,\"showTooltip\":true,\"enableExport\":true},\"title\":\"Basic Candlestick Chart\",\"dropShadow\":true,\"enableFullscreen\":true,\"useDashboardTimewindow\":true,\"displayTimewindow\":true}"
+    "defaultConfig": "{\"datasources\":[{\"type\":\"function\",\"name\":\"function\",\"dataKeys\":[{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Open\",\"color\":\"#2196f3\",\"settings\":{},\"_hash\":0.1,\"funcBody\":\"var base = 100 + Math.sin(time / 7200000) * 20;\\nreturn base + Math.random() * 5;\",\"units\":\"\",\"decimals\":2},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"High\",\"color\":\"#4CAF50\",\"settings\":{},\"_hash\":0.2,\"funcBody\":\"var base = 100 + Math.sin(time / 7200000) * 20;\\nreturn base + 5 + Math.random() * 10;\",\"units\":\"\",\"decimals\":2},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Low\",\"color\":\"#F44336\",\"settings\":{},\"_hash\":0.3,\"funcBody\":\"var base = 100 + Math.sin(time / 7200000) * 20;\\nreturn base - 5 - Math.random() * 10;\",\"units\":\"\",\"decimals\":2},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Close\",\"color\":\"#FF9800\",\"settings\":{},\"_hash\":0.4,\"funcBody\":\"var base = 100 + Math.sin(time / 7200000) * 20;\\nreturn base + Math.random() * 8 - 4;\",\"units\":\"\",\"decimals\":2}]}],\"timewindow\":{\"hideInterval\":false,\"hideLastInterval\":false,\"hideQuickInterval\":false,\"hideAggregation\":false,\"hideAggInterval\":false,\"hideTimezone\":false,\"selectedTab\":0,\"realtime\":{\"realtimeType\":0,\"timewindowMs\":86400000,\"quickInterval\":\"CURRENT_DAY\",\"interval\":3600000},\"aggregation\":{\"type\":\"AVG\",\"limit\":25000}},\"showTitle\":true,\"backgroundColor\":\"#fff\",\"color\":\"rgba(0, 0, 0, 0.87)\",\"padding\":\"8px\",\"settings\":{\"enableZoomSync\":true,\"zoomSyncDebounce\":150,\"showDataZoomSlider\":true,\"upColor\":\"#26A69A\",\"downColor\":\"#EF5350\",\"upBorderColor\":\"#26A69A\",\"downBorderColor\":\"#EF5350\",\"showMA\":false,\"maPeriod\":5,\"maColor\":\"#FF9800\",\"showLegend\":true,\"legendStyle\":\"classic\",\"legendPosition\":\"bottom\",\"legendAlign\":\"center\",\"legendCardColorMode\":\"auto\",\"legendCardColor\":\"#2196F3\",\"legendValues\":[\"current\"],\"showTimestamp\":true,\"timestampFormat\":\"YYYY-MM-DD HH:mm:ss\",\"removeOutliers\":false,\"outlierMethod\":\"iqr\",\"outlierIqrMultiplier\":1.5,\"outlierZscoreThreshold\":3,\"smoothingEnabled\":false,\"smoothingWindowMinutes\":15,\"showToolbox\":true,\"toolboxFeatures\":[\"saveAsImage\",\"dataView\",\"dataZoom\",\"restore\"],\"showTimewindowSelector\":false},\"title\":\"Basic Candlestick Chart\",\"dropShadow\":true,\"enableFullscreen\":true,\"useDashboardTimewindow\":true,\"displayTimewindow\":true}"
   },
   "tags": [
     "chart",

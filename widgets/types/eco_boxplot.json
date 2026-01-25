@@ -16,9 +16,9 @@
         "url": "https://cdn.jsdelivr.net/gh/JiriD85/ECO-TB-Custom-Widgets@main/widgets/resources/eco-widget-utils.js"
       }
     ],
-    "templateHtml": "<div id=\"chart-container\" style=\"width: 100%; height: 100%;\"></div>",
-    "templateCss": "#chart-container { position: relative; }",
-    "controllerScript": "var chart = null;\nvar utils = null;\n\nvar chartContainer = null;\nvar zoomDebounceTimer = null;\nvar isExternalUpdate = false;\n\nself.onInit = function() {\n    // Get reference to ECOWidgetUtils library\n    utils = window.ECOWidgetUtils;\n    if (!utils) {\n        console.error('ECOWidgetUtils library not loaded');\n        return;\n    }\n\n    chartContainer = self.ctx.$container.find('#chart-container')[0];\n    if (!chartContainer) {\n        console.error('Chart container not found');\n        return;\n    }\n    \n    if (typeof echarts === 'undefined') {\n        console.error('ECharts not loaded');\n        return;\n    }\n    \n    chart = echarts.init(chartContainer);\n    \n    var settings = self.ctx.settings || {};\n    var showTimewindowSelector = settings.showTimewindowSelector === true;\n\n    // Initialize timewindow selector using library\n    if (showTimewindowSelector && self.ctx.dashboard) {\n        var twContainer = self.ctx.$container.find('#timewindow-selector')[0];\n        if (twContainer) {\n            utils.timewindow.init(twContainer, {\n                color: settings.twSelectorColor || '',\n                position: settings.twSelectorPosition || 'center',\n                dayFormat: settings.twSelectorDayFormat || 'D MMM YYYY',\n                weekFormat: settings.twSelectorWeekFormat || 'D-D MMM',\n                monthFormat: settings.twSelectorMonthFormat || 'MMM YYYY',\n                customStartTime: settings.twCustomStartTime || '',\n                customEndTime: settings.twCustomEndTime || '',\n                aggregationType: settings.twAggregationType || 'NONE',\n                maxDataPoints: settings.twMaxDataPoints || 100000\n            }, self.ctx);\n            utils.timewindow.render();\n        }\n    }\n\n    if (settings.enableZoomSync !== false) {\n        chart.on('datazoom', handleZoomSync);\n    }\n    \n    updateChart();\n};\n\nfunction handleZoomSync(params) {\n    if (isExternalUpdate) return;\n    \n    var settings = self.ctx.settings || {};\n    if (settings.enableZoomSync === false) return;\n    \n    var debounceMs = settings.zoomSyncDebounce || 150;\n    \n    if (zoomDebounceTimer) {\n        clearTimeout(zoomDebounceTimer);\n    }\n    \n    zoomDebounceTimer = setTimeout(function() {\n        var option = chart.getOption();\n        var dataZoom = option.dataZoom && option.dataZoom[0];\n        if (!dataZoom) return;\n        \n        var timeWindow = self.ctx.timeWindow;\n        if (!timeWindow) return;\n        \n        var totalRange = timeWindow.maxTime - timeWindow.minTime;\n        var startPercent = dataZoom.start || 0;\n        var endPercent = dataZoom.end || 100;\n        \n        if (startPercent > 0.5 || endPercent < 99.5) {\n            var startTime = Math.round(timeWindow.minTime + (totalRange * startPercent / 100));\n            var endTime = Math.round(timeWindow.minTime + (totalRange * endPercent / 100));\n            \n            if (self.ctx.dashboard && self.ctx.dashboard.onUpdateTimewindow) {\n                self.ctx.dashboard.onUpdateTimewindow(startTime, endTime);\n            }\n        }\n    }, debounceMs);\n}\n\nself.onDataUpdated = function() {\n    isExternalUpdate = true;\n    updateChart();\n    setTimeout(function() { isExternalUpdate = false; }, 100);\n};\n\n// Calculate boxplot statistics using library percentile function\nfunction calculateBoxplotStats(values) {\n    if (!values || values.length === 0 || !utils) return null;\n    \n    var sorted = values.slice().sort(function(a, b) { return a - b; });\n    \n    // Use library percentile function (note: library uses 0-100 scale)\n    var q1 = utils.stats.percentile(sorted, 25);\n    var median = utils.stats.percentile(sorted, 50);\n    var q3 = utils.stats.percentile(sorted, 75);\n    var iqr = q3 - q1;\n    var lowerFence = q1 - 1.5 * iqr;\n    var upperFence = q3 + 1.5 * iqr;\n    \n    var min = sorted[0];\n    var max = sorted[sorted.length - 1];\n    \n    // Whiskers extend to the most extreme data point within the fences\n    var whiskerMin = min;\n    var whiskerMax = max;\n    var outliers = [];\n    \n    for (var i = 0; i < sorted.length; i++) {\n        if (sorted[i] < lowerFence) {\n            outliers.push(sorted[i]);\n        } else {\n            whiskerMin = sorted[i];\n            break;\n        }\n    }\n    \n    for (var i = sorted.length - 1; i >= 0; i--) {\n        if (sorted[i] > upperFence) {\n            outliers.push(sorted[i]);\n        } else {\n            whiskerMax = sorted[i];\n            break;\n        }\n    }\n    \n    return {\n        min: whiskerMin,\n        q1: q1,\n        median: median,\n        q3: q3,\n        max: whiskerMax,\n        outliers: outliers\n    };\n}\n\nfunction getGroupKey(timestamp, groupBy) {\n    var d = new Date(timestamp);\n    switch (groupBy) {\n        case 'hour':\n            return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate() + ' ' + d.getHours() + ':00';\n        case 'day':\n            return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();\n        case 'week':\n            var startOfYear = new Date(d.getFullYear(), 0, 1);\n            var weekNum = Math.ceil(((d - startOfYear) / 86400000 + startOfYear.getDay() + 1) / 7);\n            return d.getFullYear() + '-W' + weekNum;\n        case 'month':\n            return d.getFullYear() + '-' + (d.getMonth() + 1);\n        default:\n            return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();\n    }\n}\n\nfunction updateChart() {\n    if (!chart || !utils) return;\n    \n    var settings = self.ctx.settings || {};\n    var dataMode = settings.dataMode || 'raw';\n    var groupBy = settings.groupBy || 'day';\n    var boxColor = settings.boxColor || '#5470C6';\n    var borderColor = settings.borderColor || '#5470C6';\n    var whiskerColor = settings.whiskerColor || '#5470C6';\n    var showOutliers = settings.showOutliers !== false;\n    var outlierColor = settings.outlierColor || '#E91E63';\n    var showDataZoomSlider = settings.showDataZoomSlider !== false;\n    var showLegend = settings.showLegend !== false;\n    var showTooltip = settings.showTooltip !== false;\n    var enableExport = settings.enableExport !== false;\n    \n    var data = self.ctx.data || [];\n    if (!data.length) {\n        chart.setOption({\n            title: { text: 'No data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    var boxplotData = [];\n    var outlierData = [];\n    var categoryData = [];\n    var units = '';\n    \n    if (dataMode === 'precalculated') {\n        // Precalculated mode: expect min, q1, median, q3, max data keys\n        var minData = null, q1Data = null, medianData = null, q3Data = null, maxData = null;\n        \n        for (var i = 0; i < data.length; i++) {\n            var ds = data[i];\n            var keyName = ((ds.dataKey && ds.dataKey.name) || '').toLowerCase();\n            var keyLabel = ((ds.dataKey && ds.dataKey.label) || '').toLowerCase();\n            \n            if (keyName === 'min' || keyLabel === 'min') minData = ds;\n            else if (keyName === 'q1' || keyLabel === 'q1') q1Data = ds;\n            else if (keyName === 'median' || keyLabel === 'median') medianData = ds;\n            else if (keyName === 'q3' || keyLabel === 'q3') q3Data = ds;\n            else if (keyName === 'max' || keyLabel === 'max') maxData = ds;\n        }\n        \n        if (!minData || !q1Data || !medianData || !q3Data || !maxData) {\n            chart.setOption({\n                title: { text: 'Need min, q1, median, q3, max data keys', left: 'center', top: 'middle', textStyle: { fontSize: 11 } }\n            });\n            return;\n        }\n        \n        units = (minData.dataKey && minData.dataKey.units) || '';\n        \n        // Build maps\n        var maps = { min: {}, q1: {}, median: {}, q3: {}, max: {} };\n        [['min', minData], ['q1', q1Data], ['median', medianData], ['q3', q3Data], ['max', maxData]].forEach(function(pair) {\n            if (pair[1] && pair[1].data) {\n                pair[1].data.forEach(function(d) { maps[pair[0]][d[0]] = d[1]; });\n            }\n        });\n        \n        var timestamps = {};\n        [minData, q1Data, medianData, q3Data, maxData].forEach(function(ds) {\n            if (ds && ds.data) ds.data.forEach(function(d) { timestamps[d[0]] = true; });\n        });\n        \n        var sortedTs = Object.keys(timestamps).map(Number).sort(function(a, b) { return a - b; });\n        \n        sortedTs.forEach(function(ts) {\n            var min = maps.min[ts], q1 = maps.q1[ts], med = maps.median[ts], q3 = maps.q3[ts], max = maps.max[ts];\n            if (min !== undefined && q1 !== undefined && med !== undefined && q3 !== undefined && max !== undefined) {\n                categoryData.push(getGroupKey(ts, groupBy));\n                boxplotData.push([min, q1, med, q3, max]);\n            }\n        });\n    } else {\n        // Raw mode: group data and calculate statistics\n        var valueData = data[0];\n        if (!valueData || !valueData.data || !valueData.data.length) {\n            chart.setOption({\n                title: { text: 'No valid data', left: 'center', top: 'middle' }\n            });\n            return;\n        }\n        \n        units = (valueData.dataKey && valueData.dataKey.units) || '';\n        \n        // Auto-detect groupBy if set to 'auto'\n        if (groupBy === 'auto') {\n            var timeRange = self.ctx.timeWindow ? (self.ctx.timeWindow.maxTime - self.ctx.timeWindow.minTime) : 0;\n            if (timeRange > 30 * 86400000) groupBy = 'month';\n            else if (timeRange > 7 * 86400000) groupBy = 'week';\n            else if (timeRange > 86400000) groupBy = 'day';\n            else groupBy = 'hour';\n        }\n        \n        // Group values by time period\n        var groups = {};\n        valueData.data.forEach(function(d) {\n            if (d[1] === null || d[1] === undefined || isNaN(d[1])) return;\n            var key = getGroupKey(d[0], groupBy);\n            if (!groups[key]) groups[key] = [];\n            groups[key].push(d[1]);\n        });\n        \n        // Calculate boxplot stats for each group\n        var sortedKeys = Object.keys(groups).sort();\n        sortedKeys.forEach(function(key) {\n            var stats = calculateBoxplotStats(groups[key]);\n            if (stats) {\n                categoryData.push(key);\n                boxplotData.push([stats.min, stats.q1, stats.median, stats.q3, stats.max]);\n                if (showOutliers && stats.outliers.length > 0) {\n                    stats.outliers.forEach(function(o) {\n                        outlierData.push([categoryData.length - 1, o]);\n                    });\n                }\n            }\n        });\n    }\n    \n    if (boxplotData.length === 0) {\n        chart.setOption({\n            title: { text: 'No valid boxplot data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    var series = [{\n        name: 'Boxplot',\n        type: 'boxplot',\n        data: boxplotData,\n        itemStyle: {\n            color: boxColor,\n            borderColor: borderColor\n        },\n        boxWidth: ['40%', '70%']\n    }];\n    \n    if (showOutliers && outlierData.length > 0) {\n        series.push({\n            name: 'Outliers',\n            type: 'scatter',\n            data: outlierData,\n            itemStyle: {\n                color: outlierColor\n            },\n            symbolSize: 6\n        });\n    }\n    \n    var option = {\n        tooltip: showTooltip ? {\n            trigger: 'item',\n            formatter: function(params) {\n                if (params.seriesType === 'boxplot') {\n                    return params.name + '<br/>' +\n                        'Max: ' + utils.format.value(params.data[5], 2) + ' ' + units + '<br/>' +\n                        'Q3: ' + utils.format.value(params.data[4], 2) + ' ' + units + '<br/>' +\n                        'Median: ' + utils.format.value(params.data[3], 2) + ' ' + units + '<br/>' +\n                        'Q1: ' + utils.format.value(params.data[2], 2) + ' ' + units + '<br/>' +\n                        'Min: ' + utils.format.value(params.data[1], 2) + ' ' + units;\n                } else {\n                    return 'Outlier: ' + utils.format.value(params.data[1], 2) + ' ' + units;\n                }\n            }\n        } : {},\n        legend: showLegend ? {\n            data: showOutliers && outlierData.length > 0 ? ['Boxplot', 'Outliers'] : ['Boxplot'],\n            top: 5\n        } : {},\n        toolbox: enableExport ? {\n            feature: {\n                saveAsImage: { title: 'Save as PNG' },\n                dataView: { title: 'Data View', readOnly: true }\n            },\n            right: 10\n        } : {},\n        grid: {\n            left: 60,\n            right: enableExport ? 80 : 20,\n            top: showLegend ? 40 : 20,\n            bottom: showDataZoomSlider ? 60 : 40\n        },\n        xAxis: {\n            type: 'category',\n            data: categoryData,\n            axisLabel: { fontSize: 9, rotate: categoryData.length > 10 ? 45 : 0 },\n            splitLine: { show: false }\n        },\n        yAxis: {\n            type: 'value',\n            name: units,\n            axisLabel: { fontSize: 10 },\n            splitLine: { lineStyle: { type: 'dashed', opacity: 0.3 } }\n        },\n        dataZoom: [\n            { type: 'inside', xAxisIndex: 0 },\n            showDataZoomSlider ? { type: 'slider', xAxisIndex: 0, bottom: 5, height: 20 } : null\n        ].filter(function(x) { return x !== null; }),\n        series: series\n    };\n    \n    chart.setOption(option, true);\n}\n\nself.onResize = function() {\n    if (chart) {\n        chart.resize();\n    }\n};\n\nself.onDestroy = function() {\n    if (chart) {\n        chart.off('datazoom');\n        chart.dispose();\n        chart = null;\n    }\n    if (zoomDebounceTimer) {\n        clearTimeout(zoomDebounceTimer);\n    }\n};\n\nself.typeParameters = function() {\n    return {\n        previewWidth: '80%',\n        embedTitlePanel: true,\n        dataKeySettingsFunction: function() { return {}; },\n        defaultDataKeysFunction: function() {\n            return [{ name: 'value', label: 'Value', type: 'timeseries' }];\n        }\n    };\n};\n",
+    "templateHtml": "<div id=\"widget-wrapper\" style=\"width: 100%; height: 100%; display: flex; flex-direction: column;\">\n  <div id=\"timewindow-selector\" style=\"display: none;\"></div>\n  <div id=\"stats-card-top\" style=\"padding: 4px 8px; display: none;\"></div>\n  <div style=\"flex: 1; min-height: 0; display: flex;\">\n    <div id=\"stats-card-left\" style=\"padding: 4px; display: none;\"></div>\n    <div id=\"chart-container\" style=\"flex: 1; min-height: 0;\"></div>\n    <div id=\"stats-card-right\" style=\"padding: 4px; display: none;\"></div>\n  </div>\n  <div id=\"stats-card-bottom\" style=\"padding: 4px 8px; display: none;\"></div>\n</div>",
+    "templateCss": "#widget-wrapper { position: relative; }\n#chart-container { position: relative; }",
+    "controllerScript": "var chart = null;\nvar utils = null;\n\nvar chartContainer = null;\nvar statsCardContainers = {};\nvar timewindowSelectorContainer = null;\nvar zoomDebounceTimer = null;\nvar isExternalUpdate = false;\nvar resizeObserver = null;\n\nself.onInit = function() {\n    // Get reference to ECOWidgetUtils library\n    utils = window.ECOWidgetUtils;\n    if (!utils) {\n        console.error('ECOWidgetUtils library not loaded');\n        return;\n    }\n\n    chartContainer = self.ctx.$container.find('#chart-container')[0];\n    timewindowSelectorContainer = self.ctx.$container.find('#timewindow-selector')[0];\n    statsCardContainers = {\n        top: self.ctx.$container.find('#stats-card-top')[0],\n        bottom: self.ctx.$container.find('#stats-card-bottom')[0],\n        left: self.ctx.$container.find('#stats-card-left')[0],\n        right: self.ctx.$container.find('#stats-card-right')[0]\n    };\n\n    if (!chartContainer) {\n        console.error('Chart container not found');\n        return;\n    }\n    \n    if (typeof echarts === 'undefined') {\n        console.error('ECharts not loaded');\n        return;\n    }\n    \n    chart = echarts.init(chartContainer);\n    \n    var settings = self.ctx.settings || {};\n    var showTimewindowSelector = settings.showTimewindowSelector === true;\n\n    // Initialize timewindow selector using library\n    if (showTimewindowSelector && self.ctx.dashboard && timewindowSelectorContainer) {\n        utils.timewindow.init(timewindowSelectorContainer, {\n            color: settings.twSelectorColor || '',\n            position: settings.twSelectorPosition || 'center',\n            dayFormat: settings.twSelectorDayFormat || 'D MMM YYYY',\n            weekFormat: settings.twSelectorWeekFormat || 'D-D MMM',\n            monthFormat: settings.twSelectorMonthFormat || 'MMM YYYY',\n            customStartTime: settings.twCustomStartTime || '',\n            customEndTime: settings.twCustomEndTime || '',\n            aggregationType: settings.twAggregationType || 'NONE',\n            maxDataPoints: settings.twMaxDataPoints || 100000\n        }, self.ctx);\n        utils.timewindow.render();\n    } else if (timewindowSelectorContainer) {\n        utils.timewindow.hide();\n    }\n\n    if (settings.enableZoomSync !== false) {\n        chart.on('datazoom', handleZoomSync);\n    }\n    \n    updateChart();\n\n    // Multiple delayed resizes for ThingsBoard's async layout\n    [100, 250, 500, 1000].forEach(function(delay) {\n        setTimeout(function() {\n            if (chart && chartContainer) {\n                chart.resize({\n                    width: chartContainer.offsetWidth,\n                    height: chartContainer.offsetHeight\n                });\n            }\n        }, delay);\n    });\n\n    // ResizeObserver for dynamic container changes\n    if (typeof ResizeObserver !== 'undefined') {\n        resizeObserver = new ResizeObserver(function() {\n            requestAnimationFrame(function() {\n                if (chart && chartContainer) {\n                    chart.resize({\n                        width: chartContainer.offsetWidth,\n                        height: chartContainer.offsetHeight\n                    });\n                }\n            });\n        });\n        resizeObserver.observe(chartContainer);\n    }\n};\n\nfunction handleZoomSync(params) {\n    if (isExternalUpdate) return;\n    \n    var settings = self.ctx.settings || {};\n    if (settings.enableZoomSync === false) return;\n    \n    var debounceMs = settings.zoomSyncDebounce || 150;\n    \n    if (zoomDebounceTimer) {\n        clearTimeout(zoomDebounceTimer);\n    }\n    \n    zoomDebounceTimer = setTimeout(function() {\n        var option = chart.getOption();\n        var dataZoom = option.dataZoom && option.dataZoom[0];\n        if (!dataZoom) return;\n        \n        var timeWindow = self.ctx.timeWindow;\n        if (!timeWindow) return;\n        \n        var totalRange = timeWindow.maxTime - timeWindow.minTime;\n        var startPercent = dataZoom.start || 0;\n        var endPercent = dataZoom.end || 100;\n        \n        if (startPercent > 0.5 || endPercent < 99.5) {\n            var startTime = Math.round(timeWindow.minTime + (totalRange * startPercent / 100));\n            var endTime = Math.round(timeWindow.minTime + (totalRange * endPercent / 100));\n            \n            if (self.ctx.dashboard && self.ctx.dashboard.onUpdateTimewindow) {\n                self.ctx.dashboard.onUpdateTimewindow(startTime, endTime);\n            }\n        }\n    }, debounceMs);\n}\n\nself.onDataUpdated = function() {\n    isExternalUpdate = true;\n    updateChart();\n    setTimeout(function() { isExternalUpdate = false; }, 100);\n};\n\n// Calculate boxplot statistics using library percentile function\nfunction calculateBoxplotStats(values) {\n    if (!values || values.length === 0 || !utils) return null;\n    \n    var sorted = values.slice().sort(function(a, b) { return a - b; });\n    \n    // Use library percentile function (note: library uses 0-100 scale)\n    var q1 = utils.stats.percentile(sorted, 25);\n    var median = utils.stats.percentile(sorted, 50);\n    var q3 = utils.stats.percentile(sorted, 75);\n    var iqr = q3 - q1;\n    var lowerFence = q1 - 1.5 * iqr;\n    var upperFence = q3 + 1.5 * iqr;\n    \n    var min = sorted[0];\n    var max = sorted[sorted.length - 1];\n    \n    // Whiskers extend to the most extreme data point within the fences\n    var whiskerMin = min;\n    var whiskerMax = max;\n    var outliers = [];\n    \n    for (var i = 0; i < sorted.length; i++) {\n        if (sorted[i] < lowerFence) {\n            outliers.push(sorted[i]);\n        } else {\n            whiskerMin = sorted[i];\n            break;\n        }\n    }\n    \n    for (var i = sorted.length - 1; i >= 0; i--) {\n        if (sorted[i] > upperFence) {\n            outliers.push(sorted[i]);\n        } else {\n            whiskerMax = sorted[i];\n            break;\n        }\n    }\n    \n    return {\n        min: whiskerMin,\n        q1: q1,\n        median: median,\n        q3: q3,\n        max: whiskerMax,\n        outliers: outliers\n    };\n}\n\nfunction getGroupKey(timestamp, groupBy) {\n    var d = new Date(timestamp);\n    switch (groupBy) {\n        case 'hour':\n            return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate() + ' ' + d.getHours() + ':00';\n        case 'day':\n            return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();\n        case 'week':\n            var startOfYear = new Date(d.getFullYear(), 0, 1);\n            var weekNum = Math.ceil(((d - startOfYear) / 86400000 + startOfYear.getDay() + 1) / 7);\n            return d.getFullYear() + '-W' + weekNum;\n        case 'month':\n            return d.getFullYear() + '-' + (d.getMonth() + 1);\n        default:\n            return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();\n    }\n}\n\nfunction updateChart() {\n    if (!chart || !utils) return;\n    \n    var settings = self.ctx.settings || {};\n    \n    // Chart settings\n    var dataMode = settings.dataMode || 'raw';\n    var groupBy = settings.groupBy || 'day';\n    var boxColor = settings.boxColor || '#5470C6';\n    var borderColor = settings.borderColor || '#5470C6';\n    var whiskerColor = settings.whiskerColor || '#5470C6';\n    var showOutliers = settings.showOutliers !== false;\n    var outlierColor = settings.outlierColor || '#E91E63';\n    var showDataZoomSlider = settings.showDataZoomSlider !== false;\n    var showTooltip = settings.showTooltip !== false;\n    \n    // Legend settings\n    var showLegend = settings.showLegend !== false;\n    var legendStyle = settings.legendStyle || 'classic';\n    var legendPosition = settings.legendPosition || 'bottom';\n    var legendAlign = settings.legendAlign || 'center';\n    var legendCardColorMode = settings.legendCardColorMode || 'auto';\n    var legendCardColor = settings.legendCardColor || '#2196F3';\n    var legendValues = settings.legendValues || ['current'];\n    var showTimestamp = settings.showTimestamp !== false;\n    var timestampFormat = settings.timestampFormat || 'YYYY-MM-DD HH:mm:ss';\n    \n    // Data processing settings\n    var removeOutliersFromData = settings.removeOutliers === true;\n    var outlierMethod = settings.outlierMethod || 'iqr';\n    var outlierIqrMultiplier = settings.outlierIqrMultiplier || 1.5;\n    var outlierZscoreThreshold = settings.outlierZscoreThreshold || 3;\n    var outlierMinValue = settings.outlierMinValue;\n    var outlierMaxValue = settings.outlierMaxValue;\n    var smoothingEnabled = settings.smoothingEnabled === true;\n    var smoothingWindowMinutes = settings.smoothingWindowMinutes || 15;\n    \n    // Toolbox settings\n    var showToolbox = settings.showToolbox !== false;\n    var toolboxFeatures = settings.toolboxFeatures || ['saveAsImage', 'dataView', 'dataZoom', 'restore'];\n    \n    // Timewindow selector\n    var showTimewindowSelector = settings.showTimewindowSelector === true;\n    \n    // Render timewindow selector if enabled\n    if (showTimewindowSelector && self.ctx.dashboard && timewindowSelectorContainer) {\n        utils.timewindow.render();\n    } else if (timewindowSelectorContainer) {\n        utils.timewindow.hide();\n    }\n    \n    var data = self.ctx.data || [];\n    if (!data.length) {\n        chart.setOption({\n            title: { text: 'No data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    var boxplotData = [];\n    var outlierData = [];\n    var categoryData = [];\n    var units = '';\n    var allStats = [];\n    \n    if (dataMode === 'precalculated') {\n        // Precalculated mode: expect min, q1, median, q3, max data keys\n        var minData = null, q1Data = null, medianData = null, q3Data = null, maxData = null;\n        \n        for (var i = 0; i < data.length; i++) {\n            var ds = data[i];\n            var keyName = ((ds.dataKey && ds.dataKey.name) || '').toLowerCase();\n            var keyLabel = ((ds.dataKey && ds.dataKey.label) || '').toLowerCase();\n            \n            if (keyName === 'min' || keyLabel === 'min') minData = ds;\n            else if (keyName === 'q1' || keyLabel === 'q1') q1Data = ds;\n            else if (keyName === 'median' || keyLabel === 'median') medianData = ds;\n            else if (keyName === 'q3' || keyLabel === 'q3') q3Data = ds;\n            else if (keyName === 'max' || keyLabel === 'max') maxData = ds;\n        }\n        \n        if (!minData || !q1Data || !medianData || !q3Data || !maxData) {\n            chart.setOption({\n                title: { text: 'Need min, q1, median, q3, max data keys', left: 'center', top: 'middle', textStyle: { fontSize: 11 } }\n            });\n            return;\n        }\n        \n        units = (minData.dataKey && minData.dataKey.units) || '';\n        \n        // Build maps\n        var maps = { min: {}, q1: {}, median: {}, q3: {}, max: {} };\n        [['min', minData], ['q1', q1Data], ['median', medianData], ['q3', q3Data], ['max', maxData]].forEach(function(pair) {\n            if (pair[1] && pair[1].data) {\n                pair[1].data.forEach(function(d) { maps[pair[0]][d[0]] = d[1]; });\n            }\n        });\n        \n        var timestamps = {};\n        [minData, q1Data, medianData, q3Data, maxData].forEach(function(ds) {\n            if (ds && ds.data) ds.data.forEach(function(d) { timestamps[d[0]] = true; });\n        });\n        \n        var sortedTs = Object.keys(timestamps).map(Number).sort(function(a, b) { return a - b; });\n        \n        sortedTs.forEach(function(ts) {\n            var min = maps.min[ts], q1 = maps.q1[ts], med = maps.median[ts], q3 = maps.q3[ts], max = maps.max[ts];\n            if (min !== undefined && q1 !== undefined && med !== undefined && q3 !== undefined && max !== undefined) {\n                categoryData.push(getGroupKey(ts, groupBy));\n                boxplotData.push([min, q1, med, q3, max]);\n            }\n        });\n        \n        // Calculate overall statistics for stats card\n        if (boxplotData.length > 0) {\n            var medians = boxplotData.map(function(d) { return d[2]; });\n            var overallStats = utils.stats.calculate(medians);\n            overallStats.current = medians[medians.length - 1];\n            overallStats.lastTimestamp = sortedTs[sortedTs.length - 1];\n            allStats.push({\n                label: 'Median',\n                units: units,\n                decimals: 2,\n                color: boxColor,\n                stats: overallStats\n            });\n        }\n    } else {\n        // Raw mode: group data and calculate statistics\n        var valueData = data[0];\n        if (!valueData || !valueData.data || !valueData.data.length) {\n            chart.setOption({\n                title: { text: 'No valid data', left: 'center', top: 'middle' }\n            });\n            return;\n        }\n        \n        units = (valueData.dataKey && valueData.dataKey.units) || '';\n        var seriesColor = (valueData.dataKey && valueData.dataKey.color) || boxColor;\n        var seriesLabel = (valueData.dataKey && valueData.dataKey.label) || (valueData.dataKey && valueData.dataKey.name) || 'Value';\n        var seriesDecimals = (valueData.dataKey && valueData.dataKey.decimals !== undefined) ? valueData.dataKey.decimals : 2;\n        \n        // Extract values and timestamps\n        var rawValues = [];\n        var rawTimestamps = [];\n        valueData.data.forEach(function(d) {\n            if (d[1] !== null && d[1] !== undefined && !isNaN(d[1])) {\n                rawTimestamps.push(d[0]);\n                rawValues.push(d[1]);\n            }\n        });\n        \n        var values = rawValues.slice();\n        var timestamps = rawTimestamps.slice();\n        \n        // Apply data processing: outlier removal\n        if (removeOutliersFromData && values.length > 0) {\n            var outlierResult = utils.dataProcessing.removeOutliers(values, timestamps, {\n                method: outlierMethod,\n                iqrMultiplier: outlierIqrMultiplier,\n                zscoreThreshold: outlierZscoreThreshold,\n                minValue: outlierMinValue,\n                maxValue: outlierMaxValue\n            });\n            values = outlierResult.values;\n            timestamps = outlierResult.timestamps;\n        }\n        \n        // Apply data processing: smoothing\n        if (smoothingEnabled && smoothingWindowMinutes > 0 && timestamps.length > 1) {\n            var windowSize = utils.dataProcessing.getWindowSizeFromMinutes(timestamps, smoothingWindowMinutes);\n            values = utils.dataProcessing.movingAverage(values, windowSize);\n        }\n        \n        if (values.length === 0) {\n            chart.setOption({\n                title: { text: 'No valid data after processing', left: 'center', top: 'middle' }\n            });\n            return;\n        }\n        \n        // Auto-detect groupBy if set to 'auto'\n        if (groupBy === 'auto') {\n            var timeRange = self.ctx.timeWindow ? (self.ctx.timeWindow.maxTime - self.ctx.timeWindow.minTime) : 0;\n            if (timeRange > 30 * 86400000) groupBy = 'month';\n            else if (timeRange > 7 * 86400000) groupBy = 'week';\n            else if (timeRange > 86400000) groupBy = 'day';\n            else groupBy = 'hour';\n        }\n        \n        // Group values by time period\n        var groups = {};\n        for (var i = 0; i < values.length; i++) {\n            var key = getGroupKey(timestamps[i], groupBy);\n            if (!groups[key]) groups[key] = [];\n            groups[key].push(values[i]);\n        }\n        \n        // Calculate boxplot stats for each group\n        var sortedKeys = Object.keys(groups).sort();\n        sortedKeys.forEach(function(key) {\n            var stats = calculateBoxplotStats(groups[key]);\n            if (stats) {\n                categoryData.push(key);\n                boxplotData.push([stats.min, stats.q1, stats.median, stats.q3, stats.max]);\n                if (showOutliers && stats.outliers.length > 0) {\n                    stats.outliers.forEach(function(o) {\n                        outlierData.push([categoryData.length - 1, o]);\n                    });\n                }\n            }\n        });\n        \n        // Calculate overall statistics for stats card\n        if (values.length > 0) {\n            var overallStats = utils.stats.calculate(values);\n            overallStats.current = values[values.length - 1];\n            overallStats.lastTimestamp = timestamps[timestamps.length - 1];\n            allStats.push({\n                label: seriesLabel,\n                units: units,\n                decimals: seriesDecimals,\n                color: seriesColor,\n                stats: overallStats\n            });\n        }\n    }\n    \n    if (boxplotData.length === 0) {\n        chart.setOption({\n            title: { text: 'No valid boxplot data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    // Determine if using stats card style\n    var useStatsCard = legendStyle === 'card';\n    var legendMargin = (showLegend && !useStatsCard) ? 35 : 0;\n    \n    var topMargin = 40;\n    var bottomMargin = showDataZoomSlider ? 60 : 40;\n    var leftMargin = 60;\n    var rightMargin = showToolbox ? 80 : 20;\n    \n    if (!useStatsCard) {\n        if (legendPosition === 'top') topMargin += legendMargin;\n        if (legendPosition === 'bottom') bottomMargin += legendMargin;\n        if (legendPosition === 'left') leftMargin += legendMargin;\n        if (legendPosition === 'right') rightMargin += legendMargin;\n    }\n    \n    var series = [{\n        name: 'Boxplot',\n        type: 'boxplot',\n        data: boxplotData,\n        itemStyle: {\n            color: boxColor,\n            borderColor: borderColor\n        },\n        boxWidth: ['40%', '70%']\n    }];\n    \n    if (showOutliers && outlierData.length > 0) {\n        series.push({\n            name: 'Outliers',\n            type: 'scatter',\n            data: outlierData,\n            itemStyle: {\n                color: outlierColor\n            },\n            symbolSize: 6\n        });\n    }\n    \n    // Build legend config\n    var legendConfig = null;\n    if (showLegend && !useStatsCard) {\n        var legendData = showOutliers && outlierData.length > 0 ? ['Boxplot', 'Outliers'] : ['Boxplot'];\n        legendConfig = { data: legendData, textStyle: { fontSize: 11 } };\n        \n        switch (legendPosition) {\n            case 'top': legendConfig.top = 5; legendConfig.left = 'center'; legendConfig.orient = 'horizontal'; break;\n            case 'bottom': legendConfig.bottom = showDataZoomSlider ? 30 : 5; legendConfig.left = 'center'; legendConfig.orient = 'horizontal'; break;\n            case 'left': legendConfig.left = 5; legendConfig.top = 'middle'; legendConfig.orient = 'vertical'; break;\n            case 'right': legendConfig.right = 5; legendConfig.top = 'middle'; legendConfig.orient = 'vertical'; break;\n            default: legendConfig.bottom = showDataZoomSlider ? 30 : 5; legendConfig.left = 'center'; legendConfig.orient = 'horizontal';\n        }\n    }\n    \n    // Build toolbox config\n    var toolboxConfig = null;\n    if (showToolbox) {\n        toolboxConfig = { show: true, right: 10, top: 5, feature: {} };\n        \n        if (toolboxFeatures.indexOf('saveAsImage') !== -1) {\n            toolboxConfig.feature.saveAsImage = { show: true, title: 'Save as PNG', pixelRatio: 2 };\n        }\n        if (toolboxFeatures.indexOf('dataView') !== -1) {\n            toolboxConfig.feature.dataView = {\n                show: true,\n                title: 'Data View',\n                readOnly: true,\n                lang: ['Data View', 'Close', 'Refresh'],\n                optionToContent: function(opt) {\n                    var html = '<div style=\"padding: 12px; font-family: -apple-system, BlinkMacSystemFont, sans-serif;\">';\n                    html += '<div style=\"font-size: 14px; font-weight: 600; margin-bottom: 8px;\">Boxplot Data</div>';\n                    html += '<div style=\"max-height: 300px; overflow: auto; border: 1px solid #e5e7eb; border-radius: 6px;\">';\n                    html += '<table style=\"width: 100%; border-collapse: collapse; font-size: 12px;\">';\n                    html += '<thead style=\"position: sticky; top: 0; background: #f9fafb;\">';\n                    html += '<tr><th style=\"padding: 8px; text-align: left;\">Category</th>';\n                    html += '<th style=\"padding: 8px; text-align: right;\">Min</th>';\n                    html += '<th style=\"padding: 8px; text-align: right;\">Q1</th>';\n                    html += '<th style=\"padding: 8px; text-align: right;\">Median</th>';\n                    html += '<th style=\"padding: 8px; text-align: right;\">Q3</th>';\n                    html += '<th style=\"padding: 8px; text-align: right;\">Max</th></tr></thead><tbody>';\n                    var boxData = (opt.series && opt.series[0] && opt.series[0].data) || [];\n                    var cats = (opt.xAxis && opt.xAxis[0] && opt.xAxis[0].data) || [];\n                    for (var i = 0; i < boxData.length; i++) {\n                        var row = boxData[i];\n                        html += '<tr style=\"background: ' + (i % 2 === 0 ? '#ffffff' : '#f9fafb') + ';\">';\n                        html += '<td style=\"padding: 6px 8px;\">' + (cats[i] || i) + '</td>';\n                        html += '<td style=\"padding: 6px 8px; text-align: right;\">' + (row[0] !== null ? row[0].toFixed(2) : '-') + '</td>';\n                        html += '<td style=\"padding: 6px 8px; text-align: right;\">' + (row[1] !== null ? row[1].toFixed(2) : '-') + '</td>';\n                        html += '<td style=\"padding: 6px 8px; text-align: right;\">' + (row[2] !== null ? row[2].toFixed(2) : '-') + '</td>';\n                        html += '<td style=\"padding: 6px 8px; text-align: right;\">' + (row[3] !== null ? row[3].toFixed(2) : '-') + '</td>';\n                        html += '<td style=\"padding: 6px 8px; text-align: right;\">' + (row[4] !== null ? row[4].toFixed(2) : '-') + '</td></tr>';\n                    }\n                    html += '</tbody></table></div></div>';\n                    return html;\n                }\n            };\n        }\n        if (toolboxFeatures.indexOf('dataZoom') !== -1) {\n            toolboxConfig.feature.dataZoom = { show: true, title: { zoom: 'Zoom', back: 'Reset Zoom' } };\n        }\n        if (toolboxFeatures.indexOf('restore') !== -1) {\n            toolboxConfig.feature.restore = { show: true, title: 'Restore' };\n        }\n    }\n    \n    var option = {\n        tooltip: showTooltip ? {\n            trigger: 'item',\n            formatter: function(params) {\n                if (params.seriesType === 'boxplot') {\n                    return params.name + '<br/>' +\n                        'Max: ' + utils.format.value(params.data[5], 2) + ' ' + units + '<br/>' +\n                        'Q3: ' + utils.format.value(params.data[4], 2) + ' ' + units + '<br/>' +\n                        'Median: ' + utils.format.value(params.data[3], 2) + ' ' + units + '<br/>' +\n                        'Q1: ' + utils.format.value(params.data[2], 2) + ' ' + units + '<br/>' +\n                        'Min: ' + utils.format.value(params.data[1], 2) + ' ' + units;\n                } else {\n                    return 'Outlier: ' + utils.format.value(params.data[1], 2) + ' ' + units;\n                }\n            }\n        } : {},\n        legend: legendConfig,\n        toolbox: toolboxConfig,\n        grid: {\n            left: leftMargin,\n            right: rightMargin,\n            top: topMargin,\n            bottom: bottomMargin\n        },\n        xAxis: {\n            type: 'category',\n            data: categoryData,\n            axisLabel: { fontSize: 9, rotate: categoryData.length > 10 ? 45 : 0 },\n            splitLine: { show: false }\n        },\n        yAxis: {\n            type: 'value',\n            name: units,\n            axisLabel: { fontSize: 10 },\n            splitLine: { lineStyle: { type: 'dashed', opacity: 0.3 } }\n        },\n        dataZoom: [\n            { type: 'inside', xAxisIndex: 0 },\n            showDataZoomSlider ? { type: 'slider', xAxisIndex: 0, bottom: 5, height: 20 } : null\n        ].filter(function(x) { return x !== null; }),\n        series: series\n    };\n    \n    chart.setOption(option, true);\n    \n    // Render statistics cards using library\n    if (showLegend && useStatsCard && allStats.length > 0) {\n        utils.statsCard.render(statsCardContainers, {\n            showLegend: showLegend,\n            legendStyle: legendStyle,\n            legendAlign: legendAlign,\n            legendCardColorMode: legendCardColorMode,\n            legendCardColor: legendCardColor,\n            legendValues: legendValues,\n            legendPosition: legendPosition,\n            showTimestamp: showTimestamp,\n            timestampFormat: timestampFormat,\n            allStats: allStats\n        });\n    } else {\n        // Hide all stats card containers\n        ['top', 'bottom', 'left', 'right'].forEach(function(pos) {\n            var container = statsCardContainers[pos];\n            if (container) {\n                container.style.display = 'none';\n                while (container.firstChild) {\n                    container.removeChild(container.firstChild);\n                }\n            }\n        });\n    }\n    \n    // Resize chart after stats cards\n    function doResize() {\n        if (chart && chartContainer) {\n            chart.resize({\n                width: chartContainer.offsetWidth,\n                height: chartContainer.offsetHeight\n            });\n        }\n    }\n    requestAnimationFrame(function() { requestAnimationFrame(doResize); });\n    setTimeout(doResize, 100);\n    setTimeout(doResize, 250);\n}\n\nself.onResize = function() {\n    if (chart && chartContainer) {\n        chart.resize({\n            width: chartContainer.offsetWidth,\n            height: chartContainer.offsetHeight\n        });\n    }\n};\n\nself.onDestroy = function() {\n    if (resizeObserver) {\n        resizeObserver.disconnect();\n        resizeObserver = null;\n    }\n    if (chart) {\n        chart.off('datazoom');\n        chart.dispose();\n        chart = null;\n    }\n    if (zoomDebounceTimer) {\n        clearTimeout(zoomDebounceTimer);\n    }\n};\n\nself.typeParameters = function() {\n    return {\n        previewWidth: '80%',\n        embedTitlePanel: false,\n        hasDataExportAction: true,\n        dataKeySettingsFunction: function() { return {}; },\n        defaultDataKeysFunction: function() {\n            return [{ name: 'value', label: 'Value', type: 'timeseries' }];\n        }\n    };\n};\n",
     "settingsSchema": {
       "schema": {
         "type": "object",
@@ -87,83 +87,15 @@
             "type": "string",
             "default": "#E91E63"
           },
-          "showLegend": {
-            "title": "Show Legend",
-            "type": "boolean",
-            "default": true
-          },
           "showTooltip": {
             "title": "Show Tooltip",
             "type": "boolean",
             "default": true
           },
-          "enableExport": {
-            "title": "Enable Export (PNG/Data)",
+          "showLegend": {
+            "title": "Show Legend",
             "type": "boolean",
             "default": true
-          },
-          "showTimewindowSelector": {
-            "title": "Show Timewindow Selector",
-            "type": "boolean",
-            "default": false
-          },
-          "twSelectorColor": {
-            "title": "Selector Color",
-            "type": "string",
-            "default": ""
-          },
-          "twSelectorPosition": {
-            "title": "Selector Position",
-            "type": "string",
-            "default": "center",
-            "enum": [
-              "left",
-              "center",
-              "right"
-            ]
-          },
-          "twSelectorDayFormat": {
-            "title": "Day Format",
-            "type": "string",
-            "default": "D MMM YYYY"
-          },
-          "twSelectorWeekFormat": {
-            "title": "Week Format",
-            "type": "string",
-            "default": "D-D MMM"
-          },
-          "twSelectorMonthFormat": {
-            "title": "Month Format",
-            "type": "string",
-            "default": "MMM YYYY"
-          },
-          "twCustomStartTime": {
-            "title": "Custom Start Time",
-            "type": "string",
-            "default": ""
-          },
-          "twCustomEndTime": {
-            "title": "Custom End Time",
-            "type": "string",
-            "default": ""
-          },
-          "twAggregationType": {
-            "title": "Aggregation",
-            "type": "string",
-            "default": "NONE",
-            "enum": [
-              "NONE",
-              "AVG",
-              "MIN",
-              "MAX",
-              "SUM",
-              "COUNT"
-            ]
-          },
-          "twMaxDataPoints": {
-            "title": "Max Data Points",
-            "type": "number",
-            "default": 100000
           },
           "legendStyle": {
             "title": "Legend Style",
@@ -290,86 +222,463 @@
               "dataZoom",
               "restore"
             ]
+          },
+          "showTimewindowSelector": {
+            "title": "Show Timewindow Selector",
+            "type": "boolean",
+            "default": false
+          },
+          "twSelectorColor": {
+            "title": "Selector Color",
+            "type": "string",
+            "default": ""
+          },
+          "twSelectorPosition": {
+            "title": "Selector Position",
+            "type": "string",
+            "default": "center",
+            "enum": [
+              "left",
+              "center",
+              "right"
+            ]
+          },
+          "twSelectorDayFormat": {
+            "title": "Day Format",
+            "type": "string",
+            "default": "D MMM YYYY"
+          },
+          "twSelectorWeekFormat": {
+            "title": "Week Format",
+            "type": "string",
+            "default": "D-D MMM"
+          },
+          "twSelectorMonthFormat": {
+            "title": "Month Format",
+            "type": "string",
+            "default": "MMM YYYY"
+          },
+          "twCustomStartTime": {
+            "title": "Custom Start Time",
+            "type": "string",
+            "default": ""
+          },
+          "twCustomEndTime": {
+            "title": "Custom End Time",
+            "type": "string",
+            "default": ""
+          },
+          "twAggregationType": {
+            "title": "Aggregation",
+            "type": "string",
+            "default": "NONE",
+            "enum": [
+              "NONE",
+              "AVG",
+              "MIN",
+              "MAX",
+              "SUM",
+              "COUNT"
+            ]
+          },
+          "twMaxDataPoints": {
+            "title": "Max Data Points",
+            "type": "number",
+            "default": 100000
           }
         },
         "required": []
       },
       "form": [
-        "enableZoomSync",
+        [
+          "enableZoomSync",
+          {
+            "key": "zoomSyncDebounce",
+            "condition": "model.enableZoomSync === true"
+          },
+          "showDataZoomSlider",
+          {
+            "key": "dataMode",
+            "type": "rc-select",
+            "multiple": false,
+            "items": [
+              {
+                "value": "raw",
+                "label": "Raw Data (auto-calculate statistics)"
+              },
+              {
+                "value": "precalculated",
+                "label": "Pre-calculated (min/q1/median/q3/max)"
+              }
+            ]
+          },
+          {
+            "key": "groupBy",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.dataMode === 'raw'",
+            "items": [
+              {
+                "value": "auto",
+                "label": "Auto"
+              },
+              {
+                "value": "hour",
+                "label": "Hour"
+              },
+              {
+                "value": "day",
+                "label": "Day"
+              },
+              {
+                "value": "week",
+                "label": "Week"
+              },
+              {
+                "value": "month",
+                "label": "Month"
+              }
+            ]
+          },
+          {
+            "key": "boxColor",
+            "type": "color"
+          },
+          {
+            "key": "borderColor",
+            "type": "color"
+          },
+          {
+            "key": "whiskerColor",
+            "type": "color"
+          },
+          "showOutliers",
+          {
+            "key": "outlierColor",
+            "type": "color",
+            "condition": "model.showOutliers === true"
+          },
+          "showTooltip"
+        ],
+        [
+          "showLegend",
+          {
+            "key": "legendStyle",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showLegend === true",
+            "items": [
+              {
+                "value": "classic",
+                "label": "Classic (Text)"
+              },
+              {
+                "value": "card",
+                "label": "Statistics Card"
+              }
+            ]
+          },
+          {
+            "key": "legendPosition",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showLegend === true",
+            "items": [
+              {
+                "value": "top",
+                "label": "Top"
+              },
+              {
+                "value": "bottom",
+                "label": "Bottom"
+              },
+              {
+                "value": "left",
+                "label": "Left"
+              },
+              {
+                "value": "right",
+                "label": "Right"
+              }
+            ]
+          },
+          {
+            "key": "legendAlign",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showLegend === true && model.legendStyle === 'card'",
+            "items": [
+              {
+                "value": "left",
+                "label": "Left"
+              },
+              {
+                "value": "center",
+                "label": "Center"
+              },
+              {
+                "value": "right",
+                "label": "Right"
+              }
+            ]
+          },
+          {
+            "key": "legendCardColorMode",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showLegend === true && model.legendStyle === 'card'",
+            "items": [
+              {
+                "value": "auto",
+                "label": "Auto (Series Color)"
+              },
+              {
+                "value": "manual",
+                "label": "Manual Color"
+              },
+              {
+                "value": "gradient",
+                "label": "Gradient"
+              }
+            ]
+          },
+          {
+            "key": "legendCardColor",
+            "type": "color",
+            "condition": "model.showLegend === true && model.legendStyle === 'card' && model.legendCardColorMode === 'manual'"
+          },
+          {
+            "key": "legendValues",
+            "type": "rc-select",
+            "multiple": true,
+            "condition": "model.showLegend === true && model.legendStyle === 'card'",
+            "items": [
+              {
+                "value": "current",
+                "label": "Current Value"
+              },
+              {
+                "value": "min",
+                "label": "Minimum"
+              },
+              {
+                "value": "max",
+                "label": "Maximum"
+              },
+              {
+                "value": "mean",
+                "label": "Mean"
+              },
+              {
+                "value": "median",
+                "label": "Median"
+              },
+              {
+                "value": "sum",
+                "label": "Sum"
+              },
+              {
+                "value": "count",
+                "label": "Count"
+              }
+            ]
+          },
+          {
+            "key": "showTimestamp",
+            "condition": "model.showLegend === true && model.legendStyle === 'card'"
+          },
+          {
+            "key": "timestampFormat",
+            "condition": "model.showLegend === true && model.legendStyle === 'card' && model.showTimestamp === true"
+          }
+        ],
+        [
+          "removeOutliers",
+          {
+            "key": "outlierMethod",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.removeOutliers === true",
+            "items": [
+              {
+                "value": "iqr",
+                "label": "IQR (Interquartile Range)"
+              },
+              {
+                "value": "zscore",
+                "label": "Z-Score"
+              },
+              {
+                "value": "manual",
+                "label": "Manual Thresholds"
+              }
+            ]
+          },
+          {
+            "key": "outlierIqrMultiplier",
+            "condition": "model.removeOutliers === true && model.outlierMethod === 'iqr'"
+          },
+          {
+            "key": "outlierZscoreThreshold",
+            "condition": "model.removeOutliers === true && model.outlierMethod === 'zscore'"
+          },
+          {
+            "key": "outlierMinValue",
+            "condition": "model.removeOutliers === true && model.outlierMethod === 'manual'"
+          },
+          {
+            "key": "outlierMaxValue",
+            "condition": "model.removeOutliers === true && model.outlierMethod === 'manual'"
+          },
+          "smoothingEnabled",
+          {
+            "key": "smoothingWindowMinutes",
+            "condition": "model.smoothingEnabled === true"
+          }
+        ],
+        [
+          "showToolbox",
+          {
+            "key": "toolboxFeatures",
+            "type": "rc-select",
+            "multiple": true,
+            "condition": "model.showToolbox === true",
+            "items": [
+              {
+                "value": "saveAsImage",
+                "label": "Save as Image"
+              },
+              {
+                "value": "dataView",
+                "label": "Data View"
+              },
+              {
+                "value": "dataZoom",
+                "label": "Data Zoom"
+              },
+              {
+                "value": "restore",
+                "label": "Restore"
+              }
+            ]
+          }
+        ],
+        [
+          "showTimewindowSelector",
+          {
+            "key": "twSelectorColor",
+            "type": "color",
+            "condition": "model.showTimewindowSelector === true",
+            "description": "Leave empty for auto (uses series color)"
+          },
+          {
+            "key": "twSelectorPosition",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showTimewindowSelector === true",
+            "items": [
+              {
+                "value": "left",
+                "label": "Left"
+              },
+              {
+                "value": "center",
+                "label": "Center"
+              },
+              {
+                "value": "right",
+                "label": "Right"
+              }
+            ]
+          },
+          {
+            "key": "twSelectorDayFormat",
+            "condition": "model.showTimewindowSelector === true",
+            "description": "Format: D=day, DD=day(2), MMM=month, MM=month(2), YYYY=year, YY=year(2)"
+          },
+          {
+            "key": "twSelectorWeekFormat",
+            "condition": "model.showTimewindowSelector === true"
+          },
+          {
+            "key": "twSelectorMonthFormat",
+            "condition": "model.showTimewindowSelector === true"
+          },
+          {
+            "key": "twCustomStartTime",
+            "condition": "model.showTimewindowSelector === true",
+            "description": "Use ${attributeName} for entity attributes, e.g. ${startTimeMs}"
+          },
+          {
+            "key": "twCustomEndTime",
+            "condition": "model.showTimewindowSelector === true",
+            "description": "Use ${attributeName} for entity attributes, e.g. ${endTimeMs}"
+          },
+          {
+            "key": "twAggregationType",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showTimewindowSelector === true",
+            "items": [
+              {
+                "value": "NONE",
+                "label": "None (Raw Data)"
+              },
+              {
+                "value": "AVG",
+                "label": "Average"
+              },
+              {
+                "value": "MIN",
+                "label": "Minimum"
+              },
+              {
+                "value": "MAX",
+                "label": "Maximum"
+              },
+              {
+                "value": "SUM",
+                "label": "Sum"
+              },
+              {
+                "value": "COUNT",
+                "label": "Count"
+              }
+            ]
+          },
+          {
+            "key": "twMaxDataPoints",
+            "condition": "model.showTimewindowSelector === true",
+            "description": "Maximum number of data points to fetch (default: 100000)"
+          }
+        ]
+      ],
+      "groupInfoes": [
         {
-          "key": "zoomSyncDebounce",
-          "condition": "model.enableZoomSync === true"
-        },
-        "showDataZoomSlider",
-        {
-          "key": "dataMode",
-          "type": "rc-select",
-          "multiple": false,
-          "items": [
-            {
-              "value": "raw",
-              "label": "Raw Data (auto-calculate statistics)"
-            },
-            {
-              "value": "precalculated",
-              "label": "Pre-calculated (min/q1/median/q3/max)"
-            }
-          ]
+          "formIndex": 0,
+          "GroupTitle": "Chart Settings"
         },
         {
-          "key": "groupBy",
-          "type": "rc-select",
-          "multiple": false,
-          "condition": "model.dataMode === 'raw'",
-          "items": [
-            {
-              "value": "auto",
-              "label": "Auto"
-            },
-            {
-              "value": "hour",
-              "label": "Hour"
-            },
-            {
-              "value": "day",
-              "label": "Day"
-            },
-            {
-              "value": "week",
-              "label": "Week"
-            },
-            {
-              "value": "month",
-              "label": "Month"
-            }
-          ]
+          "formIndex": 1,
+          "GroupTitle": "Legend Settings"
         },
         {
-          "key": "boxColor",
-          "type": "color"
+          "formIndex": 2,
+          "GroupTitle": "Data Processing"
         },
         {
-          "key": "borderColor",
-          "type": "color"
+          "formIndex": 3,
+          "GroupTitle": "Toolbox Settings"
         },
         {
-          "key": "whiskerColor",
-          "type": "color"
-        },
-        "showOutliers",
-        {
-          "key": "outlierColor",
-          "type": "color",
-          "condition": "model.showOutliers === true"
-        },
-        "showLegend",
-        "showTooltip",
-        "enableExport"
+          "formIndex": 4,
+          "GroupTitle": "Timewindow Selector"
+        }
       ]
     },
     "dataKeySettingsSchema": {},
     "latestDataKeySettingsSchema": {},
-    "defaultConfig": "{\"datasources\":[{\"type\":\"function\",\"name\":\"function\",\"dataKeys\":[{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Value\",\"color\":\"#5470C6\",\"settings\":{},\"_hash\":0.1,\"funcBody\":\"var base = 50 + Math.sin(time / 86400000) * 10;\\nvar noise = (Math.random() - 0.5) * 30;\\nvar outlier = Math.random() > 0.95 ? (Math.random() > 0.5 ? 40 : -40) : 0;\\nreturn base + noise + outlier;\",\"units\":\"°C\",\"decimals\":1}]}],\"timewindow\":{\"hideInterval\":false,\"hideLastInterval\":false,\"hideQuickInterval\":false,\"hideAggregation\":false,\"hideAggInterval\":false,\"hideTimezone\":false,\"selectedTab\":0,\"realtime\":{\"realtimeType\":0,\"timewindowMs\":604800000,\"quickInterval\":\"CURRENT_WEEK\",\"interval\":3600000},\"aggregation\":{\"type\":\"NONE\",\"limit\":25000}},\"showTitle\":true,\"backgroundColor\":\"#fff\",\"color\":\"rgba(0, 0, 0, 0.87)\",\"padding\":\"8px\",\"settings\":{\"enableZoomSync\":true,\"zoomSyncDebounce\":150,\"showDataZoomSlider\":true,\"dataMode\":\"raw\",\"groupBy\":\"day\",\"boxColor\":\"#5470C6\",\"borderColor\":\"#5470C6\",\"whiskerColor\":\"#5470C6\",\"showOutliers\":true,\"outlierColor\":\"#E91E63\",\"showLegend\":true,\"showTooltip\":true,\"enableExport\":true},\"title\":\"Statistical Boxplot\",\"dropShadow\":true,\"enableFullscreen\":true,\"useDashboardTimewindow\":true,\"displayTimewindow\":true}"
+    "defaultConfig": "{\"datasources\":[{\"type\":\"function\",\"name\":\"function\",\"dataKeys\":[{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Value\",\"color\":\"#5470C6\",\"settings\":{},\"_hash\":0.1,\"funcBody\":\"var base = 50 + Math.sin(time / 86400000) * 10;\\nvar noise = (Math.random() - 0.5) * 30;\\nvar outlier = Math.random() > 0.95 ? (Math.random() > 0.5 ? 40 : -40) : 0;\\nreturn base + noise + outlier;\",\"units\":\"\\u00b0C\",\"decimals\":1}]}],\"timewindow\":{\"hideInterval\":false,\"hideLastInterval\":false,\"hideQuickInterval\":false,\"hideAggregation\":false,\"hideAggInterval\":false,\"hideTimezone\":false,\"selectedTab\":0,\"realtime\":{\"realtimeType\":0,\"timewindowMs\":604800000,\"quickInterval\":\"CURRENT_WEEK\",\"interval\":3600000},\"aggregation\":{\"type\":\"NONE\",\"limit\":25000}},\"showTitle\":true,\"backgroundColor\":\"#fff\",\"color\":\"rgba(0, 0, 0, 0.87)\",\"padding\":\"8px\",\"settings\":{\"enableZoomSync\":true,\"zoomSyncDebounce\":150,\"showDataZoomSlider\":true,\"dataMode\":\"raw\",\"groupBy\":\"day\",\"boxColor\":\"#5470C6\",\"borderColor\":\"#5470C6\",\"whiskerColor\":\"#5470C6\",\"showOutliers\":true,\"outlierColor\":\"#E91E63\",\"showLegend\":true,\"legendStyle\":\"classic\",\"legendPosition\":\"bottom\",\"legendAlign\":\"center\",\"legendCardColorMode\":\"auto\",\"legendCardColor\":\"#2196F3\",\"legendValues\":[\"current\"],\"showTimestamp\":true,\"timestampFormat\":\"YYYY-MM-DD HH:mm:ss\",\"showTooltip\":true,\"removeOutliers\":false,\"outlierMethod\":\"iqr\",\"outlierIqrMultiplier\":1.5,\"outlierZscoreThreshold\":3,\"smoothingEnabled\":false,\"smoothingWindowMinutes\":15,\"showToolbox\":true,\"toolboxFeatures\":[\"saveAsImage\",\"dataView\",\"dataZoom\",\"restore\"],\"showTimewindowSelector\":false,\"twSelectorPosition\":\"center\",\"twSelectorDayFormat\":\"D MMM YYYY\",\"twSelectorWeekFormat\":\"D-D MMM\",\"twSelectorMonthFormat\":\"MMM YYYY\",\"twAggregationType\":\"NONE\",\"twMaxDataPoints\":100000},\"title\":\"Statistical Boxplot\",\"dropShadow\":true,\"enableFullscreen\":true,\"useDashboardTimewindow\":true,\"displayTimewindow\":true}"
   },
   "tags": [
     "chart",

@@ -18,7 +18,7 @@
     ],
     "templateHtml": "<div id=\"chart-container\" style=\"width: 100%; height: 100%;\"></div>",
     "templateCss": "#chart-container { position: relative; }",
-    "controllerScript": "var chart = null;\nvar chartContainer = null;\nvar utils = null;\n\nself.onInit = function() {\n    chartContainer = self.ctx.$container.find('#chart-container')[0];\n    if (!chartContainer) {\n        console.error('Chart container not found');\n        return;\n    }\n    \n    if (typeof echarts === 'undefined') {\n        console.error('ECharts not loaded');\n        return;\n    }\n    \n    // Initialize ECOWidgetUtils library\n    utils = window.ECOWidgetUtils;\n    if (!utils) {\n        console.warn('ECOWidgetUtils not loaded, using fallback functions');\n    }\n    \n    chart = echarts.init(chartContainer);\n    \n    var settings = self.ctx.settings || {};\n    if (settings.enableDrillDown !== false) {\n        chart.on('click', function(params) {\n            if (params.data && params.data.children && params.data.children.length > 0) {\n                // Drill down functionality\n                console.log('Drill down to:', params.data.name);\n            }\n        });\n    }\n    \n    updateChart();\n};\n\nself.onDataUpdated = function() {\n    updateChart();\n};\n\nfunction getDepthColors(colorScheme, levelColors) {\n    if (colorScheme === 'custom' && levelColors) {\n        return levelColors.split(',').map(function(c) { return c.trim(); });\n    }\n    switch (colorScheme) {\n        case 'blue':\n            return ['#0D47A1', '#1565C0', '#1976D2', '#1E88E5', '#2196F3', '#42A5F5'];\n        case 'green':\n            return ['#1B5E20', '#2E7D32', '#388E3C', '#43A047', '#4CAF50', '#66BB6A'];\n        case 'red':\n            return ['#B71C1C', '#C62828', '#D32F2F', '#E53935', '#F44336', '#EF5350'];\n        case 'rainbow':\n            return ['#E91E63', '#9C27B0', '#3F51B5', '#2196F3', '#4CAF50', '#FF9800'];\n        default:\n            // Use library colors for default scheme\n            if (utils && utils.color && utils.color.getDefault) {\n                var colors = [];\n                for (var i = 0; i < 6; i++) {\n                    colors.push(utils.color.getDefault(i));\n                }\n                return colors;\n            }\n            return ['#5470C6', '#91CC75', '#FAC858', '#EE6666', '#73C0DE', '#3BA272'];\n    }\n}\n\nfunction buildManualTreeData(data, settings) {\n    // Manual mode: build tree from datasource data\n    var treeData = [];\n    var sizeAttribute = settings.sizeAttribute || 'value';\n    var labelAttribute = settings.labelAttribute || 'name';\n    \n    for (var i = 0; i < data.length; i++) {\n        var ds = data[i];\n        if (!ds.data) continue;\n        \n        var entityName = (ds.datasource && ds.datasource.name) || 'Entity ' + (i + 1);\n        var entityLabel = (ds.dataKey && ds.dataKey.label) || entityName;\n        \n        // Find size value\n        var sizeValue = 100;\n        for (var j = 0; j < ds.data.length; j++) {\n            var point = ds.data[j];\n            if (point && point.length > 1) {\n                sizeValue = point[1] || 100;\n                break;\n            }\n        }\n        \n        treeData.push({\n            name: entityLabel,\n            value: sizeValue\n        });\n    }\n    \n    return [{\n        name: 'Root',\n        children: treeData\n    }];\n}\n\nasync function buildRelationsTreeData(ctx, settings) {\n    // Relations mode: build tree from ThingsBoard entity relations\n    var relationType = settings.relationType || 'Contains';\n    var relationDirection = settings.relationDirection || 'FROM';\n    var maxDepth = settings.maxDepth || 3;\n    var sizeAttribute = settings.sizeAttribute || 'value';\n    \n    // Get root entity from first datasource\n    var data = ctx.data || [];\n    if (!data.length || !data[0].datasource) {\n        return null;\n    }\n    \n    var rootEntity = data[0].datasource.entity;\n    if (!rootEntity || !rootEntity.id) {\n        return null;\n    }\n    \n    var $injector = ctx.$scope.$injector;\n    var entityRelationService = $injector.get(ctx.servicesMap.get('entityRelationService'));\n    var attributeService = $injector.get(ctx.servicesMap.get('attributeService'));\n    \n    async function loadEntityWithChildren(entityId, depth) {\n        if (depth > maxDepth) return null;\n        \n        var node = {\n            name: entityId.entityType + ':' + entityId.id.substring(0, 8),\n            value: 100,\n            children: []\n        };\n        \n        try {\n            // Load attributes for size\n            var attrs = await attributeService.getEntityAttributes(entityId, 'SERVER_SCOPE', [sizeAttribute]).toPromise();\n            if (attrs && attrs.length > 0) {\n                node.value = parseFloat(attrs[0].value) || 100;\n            }\n            \n            // Load name attribute\n            var nameAttrs = await attributeService.getEntityAttributes(entityId, 'SERVER_SCOPE', ['name']).toPromise();\n            if (nameAttrs && nameAttrs.length > 0) {\n                node.name = nameAttrs[0].value || node.name;\n            }\n        } catch (e) {\n            console.warn('Failed to load attributes:', e);\n        }\n        \n        if (depth < maxDepth) {\n            try {\n                var query = {\n                    parameters: {\n                        rootId: entityId.id,\n                        rootType: entityId.entityType,\n                        direction: relationDirection,\n                        relationTypeGroup: 'COMMON',\n                        maxLevel: 1\n                    },\n                    filters: [{\n                        relationType: relationType,\n                        entityTypes: []\n                    }]\n                };\n                \n                var relations = await entityRelationService.findByQuery(query).toPromise();\n                \n                if (relations && relations.length > 0) {\n                    for (var i = 0; i < relations.length; i++) {\n                        var rel = relations[i];\n                        var childId = relationDirection === 'FROM' ? rel.to : rel.from;\n                        var childNode = await loadEntityWithChildren(childId, depth + 1);\n                        if (childNode) {\n                            node.children.push(childNode);\n                        }\n                    }\n                }\n            } catch (e) {\n                console.warn('Failed to load relations:', e);\n            }\n        }\n        \n        return node;\n    }\n    \n    var rootNode = await loadEntityWithChildren(rootEntity.id, 0);\n    return rootNode ? [rootNode] : null;\n}\n\nfunction updateChart() {\n    if (!chart) return;\n    \n    var settings = self.ctx.settings || {};\n    var dataMode = settings.dataMode || 'manual';\n    var colorScheme = settings.colorScheme || 'depth';\n    var levelColors = settings.levelColors || '';\n    var enableDrillDown = settings.enableDrillDown !== false;\n    var showBreadcrumb = settings.showBreadcrumb !== false;\n    var showTooltip = settings.showTooltip !== false;\n    var enableExport = settings.enableExport !== false;\n    \n    var data = self.ctx.data || [];\n    \n    if (dataMode === 'relations') {\n        // Async loading for relations mode\n        chart.showLoading();\n        \n        buildRelationsTreeData(self.ctx, settings).then(function(treeData) {\n            chart.hideLoading();\n            if (treeData) {\n                renderTreemap(treeData, settings);\n            } else {\n                // Fallback to manual mode\n                var manualData = buildManualTreeData(data, settings);\n                renderTreemap(manualData, settings);\n            }\n        }).catch(function(e) {\n            chart.hideLoading();\n            console.error('Relations loading failed:', e);\n            var manualData = buildManualTreeData(data, settings);\n            renderTreemap(manualData, settings);\n        });\n    } else {\n        var treeData = buildManualTreeData(data, settings);\n        renderTreemap(treeData, settings);\n    }\n}\n\nfunction renderTreemap(treeData, settings) {\n    if (!chart || !treeData) return;\n    \n    var colorScheme = settings.colorScheme || 'depth';\n    var levelColors = settings.levelColors || '';\n    var showBreadcrumb = settings.showBreadcrumb !== false;\n    var showTooltip = settings.showTooltip !== false;\n    var enableExport = settings.enableExport !== false;\n    \n    var colors = getDepthColors(colorScheme, levelColors);\n    \n    // Build level styles\n    var levels = [];\n    for (var i = 0; i < 6; i++) {\n        levels.push({\n            itemStyle: {\n                borderColor: '#fff',\n                borderWidth: i === 0 ? 2 : 1,\n                gapWidth: 1\n            },\n            upperLabel: {\n                show: i > 0\n            },\n            color: colors[i % colors.length]\n        });\n    }\n    \n    var option = {\n        tooltip: showTooltip ? {\n            formatter: function(info) {\n                var value = info.value;\n                var name = info.name;\n                // Use library formatting if available\n                var formattedValue;\n                if (utils && utils.format && utils.format.value) {\n                    formattedValue = utils.format.value(value, 2);\n                } else {\n                    formattedValue = (typeof value === 'number') ? value.toFixed(2) : value;\n                }\n                return name + '<br/>Value: ' + formattedValue;\n            }\n        } : {},\n        toolbox: enableExport ? {\n            feature: {\n                saveAsImage: { title: 'Save as PNG' },\n                dataView: { title: 'Data View', readOnly: true }\n            },\n            right: 10\n        } : {},\n        series: [{\n            type: 'treemap',\n            data: treeData,\n            top: 30,\n            left: 10,\n            right: enableExport ? 70 : 10,\n            bottom: showBreadcrumb ? 40 : 10,\n            roam: false,\n            nodeClick: 'zoomToNode',\n            breadcrumb: showBreadcrumb ? {\n                show: true,\n                bottom: 10,\n                left: 'center',\n                itemStyle: {\n                    color: '#5470C6',\n                    textStyle: { color: '#fff' }\n                }\n            } : { show: false },\n            label: {\n                show: true,\n                formatter: '{b}',\n                fontSize: 12\n            },\n            upperLabel: {\n                show: true,\n                height: 20,\n                fontSize: 11\n            },\n            itemStyle: {\n                borderColor: '#fff'\n            },\n            levels: levels,\n            leafDepth: 1\n        }]\n    };\n    \n    chart.setOption(option, true);\n}\n\nself.onResize = function() {\n    if (chart) {\n        chart.resize();\n    }\n};\n\nself.onDestroy = function() {\n    if (chart) {\n        chart.off('click');\n        chart.dispose();\n        chart = null;\n    }\n};\n\nself.typeParameters = function() {\n    return {\n        previewWidth: '80%',\n        embedTitlePanel: true,\n        dataKeySettingsFunction: function() { return {}; },\n        defaultDataKeysFunction: function() {\n            return [{ name: 'value', label: 'Size Value', type: 'attribute' }];\n        }\n    };\n};\n",
+    "controllerScript": "var chart = null;\nvar chartContainer = null;\nvar utils = null;\n\nself.onInit = function() {\n    chartContainer = self.ctx.$container.find('#chart-container')[0];\n    if (!chartContainer) {\n        console.error('Chart container not found');\n        return;\n    }\n    \n    if (typeof echarts === 'undefined') {\n        console.error('ECharts not loaded');\n        return;\n    }\n    \n    // Initialize ECOWidgetUtils library\n    utils = window.ECOWidgetUtils;\n    if (!utils) {\n        console.warn('ECOWidgetUtils not loaded, using fallback functions');\n    }\n    \n    chart = echarts.init(chartContainer);\n    \n    var settings = self.ctx.settings || {};\n    if (settings.enableDrillDown !== false) {\n        chart.on('click', function(params) {\n            if (params.data && params.data.children && params.data.children.length > 0) {\n                // Drill down functionality\n                console.log('Drill down to:', params.data.name);\n            }\n        });\n    }\n    \n    updateChart();\n};\n\nself.onDataUpdated = function() {\n    updateChart();\n};\n\nfunction getDepthColors(colorScheme, levelColors) {\n    if (colorScheme === 'custom' && levelColors) {\n        return levelColors.split(',').map(function(c) { return c.trim(); });\n    }\n    switch (colorScheme) {\n        case 'blue':\n            return ['#0D47A1', '#1565C0', '#1976D2', '#1E88E5', '#2196F3', '#42A5F5'];\n        case 'green':\n            return ['#1B5E20', '#2E7D32', '#388E3C', '#43A047', '#4CAF50', '#66BB6A'];\n        case 'red':\n            return ['#B71C1C', '#C62828', '#D32F2F', '#E53935', '#F44336', '#EF5350'];\n        case 'rainbow':\n            return ['#E91E63', '#9C27B0', '#3F51B5', '#2196F3', '#4CAF50', '#FF9800'];\n        default:\n            // Use library colors for default scheme\n            if (utils && utils.color && utils.color.getDefault) {\n                var colors = [];\n                for (var i = 0; i < 6; i++) {\n                    colors.push(utils.color.getDefault(i));\n                }\n                return colors;\n            }\n            return ['#5470C6', '#91CC75', '#FAC858', '#EE6666', '#73C0DE', '#3BA272'];\n    }\n}\n\nfunction buildManualTreeData(data, settings) {\n    // Manual mode: build tree from datasource data\n    var treeData = [];\n    var sizeAttribute = settings.sizeAttribute || 'value';\n    var labelAttribute = settings.labelAttribute || 'name';\n    \n    for (var i = 0; i < data.length; i++) {\n        var ds = data[i];\n        if (!ds.data) continue;\n        \n        var entityName = (ds.datasource && ds.datasource.name) || 'Entity ' + (i + 1);\n        var entityLabel = (ds.dataKey && ds.dataKey.label) || entityName;\n        \n        // Find size value\n        var sizeValue = 100;\n        for (var j = 0; j < ds.data.length; j++) {\n            var point = ds.data[j];\n            if (point && point.length > 1) {\n                sizeValue = point[1] || 100;\n                break;\n            }\n        }\n        \n        treeData.push({\n            name: entityLabel,\n            value: sizeValue\n        });\n    }\n    \n    return [{\n        name: 'Root',\n        children: treeData\n    }];\n}\n\nasync function buildRelationsTreeData(ctx, settings) {\n    // Relations mode: build tree from ThingsBoard entity relations\n    var relationType = settings.relationType || 'Contains';\n    var relationDirection = settings.relationDirection || 'FROM';\n    var maxDepth = settings.maxDepth || 3;\n    var sizeAttribute = settings.sizeAttribute || 'value';\n    \n    // Get root entity from first datasource\n    var data = ctx.data || [];\n    if (!data.length || !data[0].datasource) {\n        return null;\n    }\n    \n    var rootEntity = data[0].datasource.entity;\n    if (!rootEntity || !rootEntity.id) {\n        return null;\n    }\n    \n    var $injector = ctx.$scope.$injector;\n    var entityRelationService = $injector.get(ctx.servicesMap.get('entityRelationService'));\n    var attributeService = $injector.get(ctx.servicesMap.get('attributeService'));\n    \n    async function loadEntityWithChildren(entityId, depth) {\n        if (depth > maxDepth) return null;\n        \n        var node = {\n            name: entityId.entityType + ':' + entityId.id.substring(0, 8),\n            value: 100,\n            children: []\n        };\n        \n        try {\n            // Load attributes for size\n            var attrs = await attributeService.getEntityAttributes(entityId, 'SERVER_SCOPE', [sizeAttribute]).toPromise();\n            if (attrs && attrs.length > 0) {\n                node.value = parseFloat(attrs[0].value) || 100;\n            }\n            \n            // Load name attribute\n            var nameAttrs = await attributeService.getEntityAttributes(entityId, 'SERVER_SCOPE', ['name']).toPromise();\n            if (nameAttrs && nameAttrs.length > 0) {\n                node.name = nameAttrs[0].value || node.name;\n            }\n        } catch (e) {\n            console.warn('Failed to load attributes:', e);\n        }\n        \n        if (depth < maxDepth) {\n            try {\n                var query = {\n                    parameters: {\n                        rootId: entityId.id,\n                        rootType: entityId.entityType,\n                        direction: relationDirection,\n                        relationTypeGroup: 'COMMON',\n                        maxLevel: 1\n                    },\n                    filters: [{\n                        relationType: relationType,\n                        entityTypes: []\n                    }]\n                };\n                \n                var relations = await entityRelationService.findByQuery(query).toPromise();\n                \n                if (relations && relations.length > 0) {\n                    for (var i = 0; i < relations.length; i++) {\n                        var rel = relations[i];\n                        var childId = relationDirection === 'FROM' ? rel.to : rel.from;\n                        var childNode = await loadEntityWithChildren(childId, depth + 1);\n                        if (childNode) {\n                            node.children.push(childNode);\n                        }\n                    }\n                }\n            } catch (e) {\n                console.warn('Failed to load relations:', e);\n            }\n        }\n        \n        return node;\n    }\n    \n    var rootNode = await loadEntityWithChildren(rootEntity.id, 0);\n    return rootNode ? [rootNode] : null;\n}\n\nfunction updateChart() {\n    if (!chart) return;\n    \n    var settings = self.ctx.settings || {};\n    var dataMode = settings.dataMode || 'manual';\n    var colorScheme = settings.colorScheme || 'depth';\n    var levelColors = settings.levelColors || '';\n    var enableDrillDown = settings.enableDrillDown !== false;\n    var showBreadcrumb = settings.showBreadcrumb !== false;\n    var showTooltip = settings.showTooltip !== false;\n    \n    // Legend settings (simplified for treemap - controls labels)\n    var showLabels = settings.showLabels !== false;\n    var labelFontSize = settings.labelFontSize || 12;\n    var upperLabelFontSize = settings.upperLabelFontSize || 11;\n    \n    // Toolbox settings\n    var showToolbox = settings.showToolbox !== false;\n    var toolboxFeatures = settings.toolboxFeatures || ['saveAsImage', 'dataView'];\n    \n    var data = self.ctx.data || [];\n    \n    if (dataMode === 'relations') {\n        // Async loading for relations mode\n        chart.showLoading();\n        \n        buildRelationsTreeData(self.ctx, settings).then(function(treeData) {\n            chart.hideLoading();\n            if (treeData) {\n                renderTreemap(treeData, settings);\n            } else {\n                // Fallback to manual mode\n                var manualData = buildManualTreeData(data, settings);\n                renderTreemap(manualData, settings);\n            }\n        }).catch(function(e) {\n            chart.hideLoading();\n            console.error('Relations loading failed:', e);\n            var manualData = buildManualTreeData(data, settings);\n            renderTreemap(manualData, settings);\n        });\n    } else {\n        var treeData = buildManualTreeData(data, settings);\n        renderTreemap(treeData, settings);\n    }\n}\n\nfunction buildToolboxConfig(settings) {\n    var showToolbox = settings.showToolbox !== false;\n    if (!showToolbox) return null;\n    \n    var features = settings.toolboxFeatures || ['saveAsImage', 'dataView'];\n    var toolbox = { show: true, right: 10, top: 5, feature: {} };\n    \n    if (features.indexOf('saveAsImage') !== -1) {\n        toolbox.feature.saveAsImage = { show: true, title: 'Save as PNG', pixelRatio: 2 };\n    }\n    \n    if (features.indexOf('dataView') !== -1) {\n        toolbox.feature.dataView = {\n            show: true,\n            title: 'Data View',\n            readOnly: true,\n            lang: ['Data View', 'Close', 'Refresh']\n        };\n    }\n    \n    if (features.indexOf('restore') !== -1) {\n        toolbox.feature.restore = { show: true, title: 'Restore' };\n    }\n    \n    return toolbox;\n}\n\nfunction renderTreemap(treeData, settings) {\n    if (!chart || !treeData) return;\n    \n    var colorScheme = settings.colorScheme || 'depth';\n    var levelColors = settings.levelColors || '';\n    var showBreadcrumb = settings.showBreadcrumb !== false;\n    var showTooltip = settings.showTooltip !== false;\n    \n    // Legend settings (simplified for treemap - controls labels)\n    var showLabels = settings.showLabels !== false;\n    var labelFontSize = settings.labelFontSize || 12;\n    var upperLabelFontSize = settings.upperLabelFontSize || 11;\n    \n    // Toolbox settings\n    var showToolbox = settings.showToolbox !== false;\n    \n    var colors = getDepthColors(colorScheme, levelColors);\n    \n    // Build level styles\n    var levels = [];\n    for (var i = 0; i < 6; i++) {\n        levels.push({\n            itemStyle: {\n                borderColor: '#fff',\n                borderWidth: i === 0 ? 2 : 1,\n                gapWidth: 1\n            },\n            upperLabel: {\n                show: showLabels && i > 0,\n                fontSize: upperLabelFontSize\n            },\n            color: colors[i % colors.length]\n        });\n    }\n    \n    var toolboxConfig = buildToolboxConfig(settings);\n    \n    var option = {\n        tooltip: showTooltip ? {\n            formatter: function(info) {\n                var value = info.value;\n                var name = info.name;\n                // Use library formatting if available\n                var formattedValue;\n                if (utils && utils.format && utils.format.value) {\n                    formattedValue = utils.format.value(value, 2);\n                } else {\n                    formattedValue = (typeof value === 'number') ? value.toFixed(2) : value;\n                }\n                return name + '<br/>Value: ' + formattedValue;\n            }\n        } : {},\n        toolbox: toolboxConfig,\n        series: [{\n            type: 'treemap',\n            data: treeData,\n            top: 30,\n            left: 10,\n            right: showToolbox ? 70 : 10,\n            bottom: showBreadcrumb ? 40 : 10,\n            roam: false,\n            nodeClick: 'zoomToNode',\n            breadcrumb: showBreadcrumb ? {\n                show: true,\n                bottom: 10,\n                left: 'center',\n                itemStyle: {\n                    color: '#5470C6',\n                    textStyle: { color: '#fff' }\n                }\n            } : { show: false },\n            label: {\n                show: showLabels,\n                formatter: '{b}',\n                fontSize: labelFontSize\n            },\n            upperLabel: {\n                show: showLabels,\n                height: 20,\n                fontSize: upperLabelFontSize\n            },\n            itemStyle: {\n                borderColor: '#fff'\n            },\n            levels: levels,\n            leafDepth: 1\n        }]\n    };\n    \n    chart.setOption(option, true);\n}\n\nself.onResize = function() {\n    if (chart) {\n        chart.resize();\n    }\n};\n\nself.onDestroy = function() {\n    if (chart) {\n        chart.off('click');\n        chart.dispose();\n        chart = null;\n    }\n};\n\nself.typeParameters = function() {\n    return {\n        previewWidth: '80%',\n        embedTitlePanel: true,\n        dataKeySettingsFunction: function() { return {}; },\n        defaultDataKeysFunction: function() {\n            return [{ name: 'value', label: 'Size Value', type: 'attribute' }];\n        }\n    };\n};\n",
     "settingsSchema": {
       "schema": {
         "type": "object",
@@ -84,76 +84,148 @@
             "type": "boolean",
             "default": true
           },
-          "enableExport": {
-            "title": "Enable Export (PNG/Data)",
+          "showLabels": {
+            "title": "Show Labels",
             "type": "boolean",
             "default": true
+          },
+          "labelFontSize": {
+            "title": "Label Font Size",
+            "type": "number",
+            "default": 12
+          },
+          "upperLabelFontSize": {
+            "title": "Upper Label Font Size",
+            "type": "number",
+            "default": 11
+          },
+          "showToolbox": {
+            "title": "Show Toolbox",
+            "type": "boolean",
+            "default": true
+          },
+          "toolboxFeatures": {
+            "title": "Toolbox Features",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": ["saveAsImage", "dataView"]
           }
         },
         "required": []
       },
       "form": [
+        [
+          {
+            "key": "dataMode",
+            "type": "rc-select",
+            "multiple": false,
+            "items": [
+              { "value": "manual", "label": "Manual (from datasource values)" },
+              { "value": "relations", "label": "Entity Relations (load hierarchy)" }
+            ]
+          },
+          {
+            "key": "relationDirection",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.dataMode === 'relations'",
+            "items": [
+              { "value": "FROM", "label": "From parent to children" },
+              { "value": "TO", "label": "From children to parent" }
+            ]
+          },
+          {
+            "key": "relationType",
+            "condition": "model.dataMode === 'relations'"
+          },
+          {
+            "key": "maxDepth",
+            "condition": "model.dataMode === 'relations'"
+          },
+          {
+            "key": "sizeAttribute",
+            "condition": "model.dataMode === 'relations'"
+          },
+          {
+            "key": "labelAttribute",
+            "condition": "model.dataMode === 'relations'"
+          },
+          "enableDrillDown",
+          "showBreadcrumb",
+          {
+            "key": "colorScheme",
+            "type": "rc-select",
+            "multiple": false,
+            "items": [
+              { "value": "depth", "label": "Depth-based colors" },
+              { "value": "blue", "label": "Blue shades" },
+              { "value": "green", "label": "Green shades" },
+              { "value": "red", "label": "Red shades" },
+              { "value": "rainbow", "label": "Rainbow" },
+              { "value": "custom", "label": "Custom colors" }
+            ]
+          },
+          {
+            "key": "levelColors",
+            "condition": "model.colorScheme === 'custom'"
+          },
+          "showTooltip"
+        ],
+        [
+          "showLabels",
+          {
+            "key": "labelFontSize",
+            "condition": "model.showLabels === true"
+          },
+          {
+            "key": "upperLabelFontSize",
+            "condition": "model.showLabels === true"
+          }
+        ],
+        [
+          "showToolbox",
+          {
+            "key": "toolboxFeatures",
+            "type": "rc-select",
+            "multiple": true,
+            "condition": "model.showToolbox === true",
+            "items": [
+              {
+                "value": "saveAsImage",
+                "label": "Save as Image"
+              },
+              {
+                "value": "dataView",
+                "label": "Data View"
+              },
+              {
+                "value": "restore",
+                "label": "Restore"
+              }
+            ]
+          }
+        ]
+      ],
+      "groupInfoes": [
         {
-          "key": "dataMode",
-          "type": "rc-select",
-          "multiple": false,
-          "items": [
-            { "value": "manual", "label": "Manual (from datasource values)" },
-            { "value": "relations", "label": "Entity Relations (load hierarchy)" }
-          ]
+          "formIndex": 0,
+          "GroupTitle": "Chart Settings"
         },
         {
-          "key": "relationDirection",
-          "type": "rc-select",
-          "multiple": false,
-          "condition": "model.dataMode === 'relations'",
-          "items": [
-            { "value": "FROM", "label": "From parent to children" },
-            { "value": "TO", "label": "From children to parent" }
-          ]
+          "formIndex": 1,
+          "GroupTitle": "Label Settings"
         },
         {
-          "key": "relationType",
-          "condition": "model.dataMode === 'relations'"
-        },
-        {
-          "key": "maxDepth",
-          "condition": "model.dataMode === 'relations'"
-        },
-        {
-          "key": "sizeAttribute",
-          "condition": "model.dataMode === 'relations'"
-        },
-        {
-          "key": "labelAttribute",
-          "condition": "model.dataMode === 'relations'"
-        },
-        "enableDrillDown",
-        "showBreadcrumb",
-        {
-          "key": "colorScheme",
-          "type": "rc-select",
-          "multiple": false,
-          "items": [
-            { "value": "depth", "label": "Depth-based colors" },
-            { "value": "blue", "label": "Blue shades" },
-            { "value": "green", "label": "Green shades" },
-            { "value": "red", "label": "Red shades" },
-            { "value": "rainbow", "label": "Rainbow" },
-            { "value": "custom", "label": "Custom colors" }
-          ]
-        },
-        {
-          "key": "levelColors",
-          "condition": "model.colorScheme === 'custom'"
-        },
-        "showTooltip",
-        "enableExport"
+          "formIndex": 2,
+          "GroupTitle": "Toolbox Settings"
+        }
       ]
     },
     "dataKeySettingsSchema": {},
     "latestDataKeySettingsSchema": {},
-    "defaultConfig": "{\"datasources\":[{\"type\":\"function\",\"name\":\"function\",\"dataKeys\":[{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Category A\",\"color\":\"#5470C6\",\"settings\":{},\"_hash\":0.1,\"funcBody\":\"return 300 + Math.random() * 100;\",\"units\":\"\",\"decimals\":0},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Category B\",\"color\":\"#91CC75\",\"settings\":{},\"_hash\":0.2,\"funcBody\":\"return 200 + Math.random() * 80;\",\"units\":\"\",\"decimals\":0},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Category C\",\"color\":\"#FAC858\",\"settings\":{},\"_hash\":0.3,\"funcBody\":\"return 150 + Math.random() * 60;\",\"units\":\"\",\"decimals\":0},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Category D\",\"color\":\"#EE6666\",\"settings\":{},\"_hash\":0.4,\"funcBody\":\"return 100 + Math.random() * 50;\",\"units\":\"\",\"decimals\":0},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Category E\",\"color\":\"#73C0DE\",\"settings\":{},\"_hash\":0.5,\"funcBody\":\"return 80 + Math.random() * 40;\",\"units\":\"\",\"decimals\":0}]}],\"showTitle\":true,\"backgroundColor\":\"#fff\",\"color\":\"rgba(0, 0, 0, 0.87)\",\"padding\":\"8px\",\"settings\":{\"dataMode\":\"manual\",\"relationDirection\":\"FROM\",\"relationType\":\"Contains\",\"maxDepth\":3,\"sizeAttribute\":\"value\",\"labelAttribute\":\"name\",\"enableDrillDown\":true,\"showBreadcrumb\":true,\"colorScheme\":\"depth\",\"showTooltip\":true,\"enableExport\":true},\"title\":\"Treemap\",\"dropShadow\":true,\"enableFullscreen\":true}"
+    "defaultConfig": "{\"datasources\":[{\"type\":\"function\",\"name\":\"function\",\"dataKeys\":[{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Category A\",\"color\":\"#5470C6\",\"settings\":{},\"_hash\":0.1,\"funcBody\":\"return 300 + Math.random() * 100;\",\"units\":\"\",\"decimals\":0},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Category B\",\"color\":\"#91CC75\",\"settings\":{},\"_hash\":0.2,\"funcBody\":\"return 200 + Math.random() * 80;\",\"units\":\"\",\"decimals\":0},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Category C\",\"color\":\"#FAC858\",\"settings\":{},\"_hash\":0.3,\"funcBody\":\"return 150 + Math.random() * 60;\",\"units\":\"\",\"decimals\":0},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Category D\",\"color\":\"#EE6666\",\"settings\":{},\"_hash\":0.4,\"funcBody\":\"return 100 + Math.random() * 50;\",\"units\":\"\",\"decimals\":0},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Category E\",\"color\":\"#73C0DE\",\"settings\":{},\"_hash\":0.5,\"funcBody\":\"return 80 + Math.random() * 40;\",\"units\":\"\",\"decimals\":0}]}],\"showTitle\":true,\"backgroundColor\":\"#fff\",\"color\":\"rgba(0, 0, 0, 0.87)\",\"padding\":\"8px\",\"settings\":{\"dataMode\":\"manual\",\"relationDirection\":\"FROM\",\"relationType\":\"Contains\",\"maxDepth\":3,\"sizeAttribute\":\"value\",\"labelAttribute\":\"name\",\"enableDrillDown\":true,\"showBreadcrumb\":true,\"colorScheme\":\"depth\",\"showTooltip\":true,\"showLabels\":true,\"labelFontSize\":12,\"upperLabelFontSize\":11,\"showToolbox\":true,\"toolboxFeatures\":[\"saveAsImage\",\"dataView\"]},\"title\":\"Treemap\",\"dropShadow\":true,\"enableFullscreen\":true}"
   },
   "tags": [
     "chart",
