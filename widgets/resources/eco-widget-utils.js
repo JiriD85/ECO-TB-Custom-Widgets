@@ -109,7 +109,191 @@
             labelElement.textContent = formatPeriodLabel(state.mode, state.currentDate);
             wrapper.appendChild(labelElement);
 
+            // Calendar icon for custom mode datepicker
+            if (state.mode === 'custom') {
+                var calendarBtn = document.createElement('button');
+                calendarBtn.textContent = '📅';
+                calendarBtn.title = 'Zeitraum wählen';
+                calendarBtn.style.cssText = 'background: rgba(255,255,255,0.2); border: none; color: white; width: 24px; height: 24px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; justify-content: center; transition: background 0.2s; margin-left: 4px;';
+                calendarBtn.onmouseover = function() { calendarBtn.style.background = 'rgba(255,255,255,0.35)'; };
+                calendarBtn.onmouseout = function() { calendarBtn.style.background = 'rgba(255,255,255,0.2)'; };
+                calendarBtn.onclick = function(e) {
+                    e.stopPropagation();
+                    showDatePicker(wrapper, accentColor);
+                };
+                wrapper.appendChild(calendarBtn);
+            }
+
             container.appendChild(wrapper);
+        }
+
+        function showDatePicker(anchorElement, accentColor) {
+            // Remove existing picker if any
+            var existingPicker = document.getElementById('eco-tw-datepicker');
+            if (existingPicker) {
+                existingPicker.remove();
+                return;
+            }
+
+            // Get current custom range or dashboard timewindow
+            var startDate = new Date();
+            var endDate = new Date();
+            startDate.setDate(startDate.getDate() - 7); // Default: last 7 days
+
+            if (state.customStart && state.customEnd) {
+                startDate = new Date(state.customStart);
+                endDate = new Date(state.customEnd);
+            } else if (ctx && ctx.dashboard && ctx.dashboard.dashboardTimewindow) {
+                var tw = ctx.dashboard.dashboardTimewindow;
+                if (tw.history && tw.history.fixedTimewindow) {
+                    startDate = new Date(tw.history.fixedTimewindow.startTimeMs);
+                    endDate = new Date(tw.history.fixedTimewindow.endTimeMs);
+                }
+            }
+
+            // Format dates for input fields
+            function formatDateForInput(d) {
+                return d.getFullYear() + '-' +
+                       String(d.getMonth() + 1).padStart(2, '0') + '-' +
+                       String(d.getDate()).padStart(2, '0');
+            }
+
+            // Create picker popup using safe DOM methods
+            var picker = document.createElement('div');
+            picker.id = 'eco-tw-datepicker';
+            picker.style.cssText = 'position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px; background: white; border-radius: 8px; padding: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.25); z-index: 10000; min-width: 280px;';
+
+            var innerWrapper = document.createElement('div');
+            innerWrapper.style.cssText = 'display: flex; flex-direction: column; gap: 10px;';
+
+            // Title
+            var title = document.createElement('div');
+            title.style.cssText = 'font-size: 12px; font-weight: 600; color: #333; margin-bottom: 4px;';
+            title.textContent = 'Zeitraum wählen';
+            innerWrapper.appendChild(title);
+
+            // Date inputs row
+            var inputsRow = document.createElement('div');
+            inputsRow.style.cssText = 'display: flex; gap: 8px; align-items: center;';
+
+            // Start date container
+            var startContainer = document.createElement('div');
+            startContainer.style.cssText = 'flex: 1;';
+            var startLabel = document.createElement('label');
+            startLabel.style.cssText = 'font-size: 10px; color: #666; display: block; margin-bottom: 2px;';
+            startLabel.textContent = 'Von';
+            var startInput = document.createElement('input');
+            startInput.type = 'date';
+            startInput.id = 'eco-tw-start';
+            startInput.value = formatDateForInput(startDate);
+            startInput.style.cssText = 'width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px; box-sizing: border-box;';
+            startContainer.appendChild(startLabel);
+            startContainer.appendChild(startInput);
+            inputsRow.appendChild(startContainer);
+
+            // End date container
+            var endContainer = document.createElement('div');
+            endContainer.style.cssText = 'flex: 1;';
+            var endLabel = document.createElement('label');
+            endLabel.style.cssText = 'font-size: 10px; color: #666; display: block; margin-bottom: 2px;';
+            endLabel.textContent = 'Bis';
+            var endInput = document.createElement('input');
+            endInput.type = 'date';
+            endInput.id = 'eco-tw-end';
+            endInput.value = formatDateForInput(endDate);
+            endInput.style.cssText = 'width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px; box-sizing: border-box;';
+            endContainer.appendChild(endLabel);
+            endContainer.appendChild(endInput);
+            inputsRow.appendChild(endContainer);
+
+            innerWrapper.appendChild(inputsRow);
+
+            // Buttons row
+            var buttonsRow = document.createElement('div');
+            buttonsRow.style.cssText = 'display: flex; gap: 6px; justify-content: flex-end; margin-top: 4px;';
+
+            var cancelBtn = document.createElement('button');
+            cancelBtn.style.cssText = 'padding: 6px 12px; border: 1px solid #ddd; background: white; border-radius: 4px; font-size: 11px; cursor: pointer;';
+            cancelBtn.textContent = 'Abbrechen';
+
+            var applyBtn = document.createElement('button');
+            applyBtn.style.cssText = 'padding: 6px 12px; border: none; background: ' + accentColor + '; color: white; border-radius: 4px; font-size: 11px; cursor: pointer; font-weight: 500;';
+            applyBtn.textContent = 'Anwenden';
+
+            buttonsRow.appendChild(cancelBtn);
+            buttonsRow.appendChild(applyBtn);
+            innerWrapper.appendChild(buttonsRow);
+
+            picker.appendChild(innerWrapper);
+
+            // Position picker relative to anchor
+            anchorElement.style.position = 'relative';
+            anchorElement.appendChild(picker);
+
+            // Event handlers
+            cancelBtn.onclick = function(e) {
+                e.stopPropagation();
+                picker.remove();
+            };
+
+            applyBtn.onclick = function(e) {
+                e.stopPropagation();
+                var newStart = new Date(startInput.value);
+                var newEnd = new Date(endInput.value);
+
+                // Set end to end of day
+                newEnd.setHours(23, 59, 59, 999);
+
+                // Store custom range in state
+                state.customStart = newStart.getTime();
+                state.customEnd = newEnd.getTime();
+
+                // Apply the custom range
+                applyCustomRange(state.customStart, state.customEnd);
+
+                picker.remove();
+                updateLabel();
+            };
+
+            // Close on outside click
+            function closeOnOutsideClick(e) {
+                if (!picker.contains(e.target) && e.target !== picker) {
+                    picker.remove();
+                    document.removeEventListener('click', closeOnOutsideClick);
+                }
+            }
+            setTimeout(function() {
+                document.addEventListener('click', closeOnOutsideClick);
+            }, 100);
+        }
+
+        function applyCustomRange(startMs, endMs) {
+            if (!ctx) return;
+
+            var timewindow = {
+                history: {
+                    fixedTimewindow: { startTimeMs: startMs, endTimeMs: endMs },
+                    historyType: 0
+                },
+                aggregation: {
+                    type: settings.aggregationType || 'NONE',
+                    limit: settings.maxDataPoints || 100000
+                }
+            };
+
+            var useDashboardTimewindow = ctx.widget && ctx.widget.config ? ctx.widget.config.useDashboardTimewindow : true;
+
+            if (useDashboardTimewindow !== false) {
+                if (ctx.dashboard && ctx.dashboard.updateDashboardTimewindow) {
+                    ctx.dashboard.updateDashboardTimewindow(timewindow);
+                } else if (ctx.dashboard && ctx.dashboard.onUpdateTimewindow) {
+                    ctx.dashboard.onUpdateTimewindow(startMs, endMs);
+                }
+            } else {
+                if (ctx.timewindowFunctions && ctx.timewindowFunctions.onUpdateTimewindow) {
+                    ctx.timewindowFunctions.onUpdateTimewindow(startMs, endMs);
+                }
+            }
         }
 
         function createNavButton(symbol, onClick) {
@@ -339,7 +523,13 @@
                 case 'month':
                     return ECOWidgetUtils.format.date(d, monthFormat);
                 case 'custom':
-                    // Custom mode: show dashboard timewindow or settings range
+                    // Custom mode: show user-selected range first
+                    if (state.customStart && state.customEnd) {
+                        var cs = new Date(state.customStart);
+                        var ce = new Date(state.customEnd);
+                        return ECOWidgetUtils.format.date(cs, 'DD.MM.YY') + ' - ' + ECOWidgetUtils.format.date(ce, 'DD.MM.YY');
+                    }
+                    // Then try dashboard timewindow
                     if (ctx && ctx.dashboard && ctx.dashboard.dashboardTimewindow) {
                         var tw = ctx.dashboard.dashboardTimewindow;
                         if (tw.history && tw.history.fixedTimewindow) {
@@ -351,9 +541,9 @@
                     // Fallback: use custom range from settings if defined
                     var customRange = calculateCustomRange();
                     if (customRange && (settings.customStartTime || settings.customEndTime)) {
-                        var cs = new Date(customRange.start);
-                        var ce = new Date(customRange.end);
-                        return ECOWidgetUtils.format.date(cs, 'DD.MM.YY') + ' - ' + ECOWidgetUtils.format.date(ce, 'DD.MM.YY');
+                        var csr = new Date(customRange.start);
+                        var cer = new Date(customRange.end);
+                        return ECOWidgetUtils.format.date(csr, 'DD.MM.YY') + ' - ' + ECOWidgetUtils.format.date(cer, 'DD.MM.YY');
                     }
                     return 'Dashboard';
             }
@@ -873,7 +1063,7 @@
     // ========================================
     // Version Info
     // ========================================
-    ECOWidgetUtils.version = '1.3.0';
+    ECOWidgetUtils.version = '1.4.0';
 
     // Export to global scope
     global.ECOWidgetUtils = ECOWidgetUtils;
