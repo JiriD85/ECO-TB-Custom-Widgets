@@ -19,6 +19,9 @@ var twState = {
     customEnd: null      // User-selected end (via datepicker)
 };
 
+// Cached entity attributes (fetched from API)
+var entityAttributes = {};
+
 // ========================================
 // Initialization
 // ========================================
@@ -44,10 +47,11 @@ self.onInit = function() {
 
     chart = echarts.init(chartContainer);
 
-    // Initialize timewindow selector
-    initTimewindowSelector();
-
-    updateChart();
+    // Fetch entity attributes, then initialize timewindow
+    fetchEntityAttributes(function() {
+        initTimewindowSelector();
+        updateChart();
+    });
 
     // Resize handling
     [100, 250, 500, 1000].forEach(function(delay) {
@@ -90,6 +94,75 @@ self.onDestroy = function() {
         chart = null;
     }
 };
+
+// ========================================
+// Entity Attributes
+// ========================================
+function fetchEntityAttributes(callback) {
+    // Get first entity from datasources
+    if (!self.ctx.datasources || self.ctx.datasources.length === 0) {
+        callback();
+        return;
+    }
+
+    var ds = self.ctx.datasources[0];
+    if (!ds.entity || !ds.entity.id) {
+        callback();
+        return;
+    }
+
+    var entityId = ds.entity.id.id;
+    var entityType = ds.entity.id.entityType;
+
+    // Use ThingsBoard attribute service
+    if (self.ctx.attributeService) {
+        self.ctx.attributeService.getEntityAttributes(
+            { id: entityId, entityType: entityType },
+            'SERVER_SCOPE',
+            null,  // All attributes
+            function(attributes) {
+                // Store attributes
+                if (attributes) {
+                    attributes.forEach(function(attr) {
+                        entityAttributes[attr.key] = attr.value;
+                    });
+                }
+                // Also fetch shared attributes
+                self.ctx.attributeService.getEntityAttributes(
+                    { id: entityId, entityType: entityType },
+                    'SHARED_SCOPE',
+                    null,
+                    function(sharedAttrs) {
+                        if (sharedAttrs) {
+                            sharedAttrs.forEach(function(attr) {
+                                entityAttributes[attr.key] = attr.value;
+                            });
+                        }
+                        callback();
+                    },
+                    function() { callback(); }
+                );
+            },
+            function() { callback(); }
+        );
+    } else if (self.ctx.http) {
+        // Fallback: use HTTP API
+        var url = '/api/plugins/telemetry/' + entityType + '/' + entityId + '/values/attributes';
+        self.ctx.http.get(url).subscribe(
+            function(response) {
+                if (response && Array.isArray(response)) {
+                    response.forEach(function(attr) {
+                        entityAttributes[attr.key] = attr.value;
+                    });
+                }
+                callback();
+            },
+            function() { callback(); }
+        );
+    } else {
+        callback();
+    }
+}
 
 // ========================================
 // Timewindow Selector
@@ -343,12 +416,21 @@ function resolveTimeValue(valueStr) {
     var varMatch = valueStr.match(/^\$\{(.+)\}$/);
     if (varMatch) {
         var attrName = varMatch[1];
+
+        // 1. Check fetched entity attributes (from API)
+        if (entityAttributes[attrName] !== undefined) {
+            return Number(entityAttributes[attrName]);
+        }
+
+        // 2. Check datasource entity attributes
         if (self.ctx.datasources && self.ctx.datasources[0]) {
             var ds = self.ctx.datasources[0];
             if (ds.entity && ds.entity.attributes && ds.entity.attributes[attrName] !== undefined) {
                 return Number(ds.entity.attributes[attrName]);
             }
         }
+
+        // 3. Check latestData (if configured as latestDataKey)
         if (self.ctx.latestData) {
             for (var i = 0; i < self.ctx.latestData.length; i++) {
                 var ld = self.ctx.latestData[i];
@@ -357,6 +439,8 @@ function resolveTimeValue(valueStr) {
                 }
             }
         }
+
+        console.warn('ECO Timeseries: Attribute "' + attrName + '" not found');
         return null;
     }
 
