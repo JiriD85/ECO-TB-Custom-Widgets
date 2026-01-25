@@ -20,26 +20,35 @@
     var ECOWidgetUtils = {};
 
     // ========================================
-    // Timewindow Selector Module
+    // Timewindow Selector Module (Factory Pattern)
     // ========================================
+    // Each widget gets its own instance via create() or init()
     ECOWidgetUtils.timewindow = (function() {
-        var state = {
-            mode: 'day',
-            currentDate: new Date()
-        };
 
-        var settings = {};
-        var container = null;
-        var ctx = null;
-        var labelElement = null;  // Store reference to label element
+        // Factory function to create a new timewindow selector instance
+        function createInstance() {
+            var state = {
+                mode: 'day',
+                currentDate: new Date()
+            };
 
-        function init(twContainer, twSettings, widgetCtx) {
-            container = twContainer;
-            settings = twSettings || {};
-            ctx = widgetCtx;
-            state.currentDate = new Date();
-            labelElement = null;  // Reset label reference
-        }
+            var settings = {};
+            var container = null;
+            var ctx = null;
+            var labelElement = null;
+
+            function init(twContainer, twSettings, widgetCtx) {
+                container = twContainer;
+                settings = twSettings || {};
+                ctx = widgetCtx;
+                state.currentDate = new Date();
+                labelElement = null;
+
+                // Store instance reference on container for retrieval
+                if (container) {
+                    container._twInstance = instance;
+                }
+            }
 
         function render() {
             if (!container) return;
@@ -347,16 +356,67 @@
             if (newState.currentDate) state.currentDate = newState.currentDate;
         }
 
+            // Instance API
+            var instance = {
+                init: init,
+                render: render,
+                hide: hide,
+                apply: apply,
+                navigate: navigate,
+                selectMode: selectMode,
+                getState: getState,
+                setState: setState,
+                calculateRange: calculateRange
+            };
+
+            return instance;
+        }
+
+        // Backwards-compatible singleton for simple usage
+        // Each call to init() on a different container creates/retrieves the correct instance
+        var defaultInstance = null;
+
         return {
-            init: init,
-            render: render,
-            hide: hide,
-            apply: apply,
-            navigate: navigate,
-            selectMode: selectMode,
-            getState: getState,
-            setState: setState,
-            calculateRange: calculateRange
+            // Create a new independent instance (recommended for multiple widgets)
+            create: function() {
+                return createInstance();
+            },
+
+            // Backwards-compatible API - manages instances per container
+            init: function(twContainer, twSettings, widgetCtx) {
+                // Check if container already has an instance
+                if (twContainer && twContainer._twInstance) {
+                    defaultInstance = twContainer._twInstance;
+                } else {
+                    defaultInstance = createInstance();
+                }
+                defaultInstance.init(twContainer, twSettings, widgetCtx);
+            },
+            render: function() {
+                if (defaultInstance) defaultInstance.render();
+            },
+            hide: function() {
+                if (defaultInstance) defaultInstance.hide();
+            },
+            apply: function() {
+                if (defaultInstance) defaultInstance.apply();
+            },
+            navigate: function(dir) {
+                if (defaultInstance) defaultInstance.navigate(dir);
+            },
+            selectMode: function(mode) {
+                if (defaultInstance) defaultInstance.selectMode(mode);
+            },
+            getState: function() {
+                return defaultInstance ? defaultInstance.getState() : { mode: 'day', currentDate: new Date() };
+            },
+            setState: function(newState) {
+                if (defaultInstance) defaultInstance.setState(newState);
+            },
+            calculateRange: function(mode, date) {
+                if (defaultInstance) return defaultInstance.calculateRange(mode, date);
+                return null;
+            }
         };
     })();
 
@@ -784,7 +844,7 @@
     // ========================================
     // Version Info
     // ========================================
-    ECOWidgetUtils.version = '1.1.0';
+    ECOWidgetUtils.version = '1.2.0';
 
     // Export to global scope
     global.ECOWidgetUtils = ECOWidgetUtils;
