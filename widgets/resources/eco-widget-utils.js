@@ -28,7 +28,7 @@
         // Factory function to create a new timewindow selector instance
         function createInstance() {
             var state = {
-                mode: 'day',
+                mode: 'custom',
                 currentDate: new Date()
             };
 
@@ -43,6 +43,9 @@
                 ctx = widgetCtx;
                 state.currentDate = new Date();
                 labelElement = null;
+
+                // Set default mode from settings (default is 'custom')
+                state.mode = settings.defaultMode || 'custom';
 
                 // Store instance reference on container for retrieval
                 if (container) {
@@ -78,30 +81,27 @@
             var wrapper = document.createElement('div');
             wrapper.style.cssText = 'display: flex; align-items: center; gap: 6px; background: ' + accentColor + '; border-radius: 6px; padding: 6px 10px; box-shadow: 0 2px 6px rgba(0,0,0,0.12);';
 
-            var hasCustomRange = settings.customStartTime || settings.customEndTime;
+            // Navigation buttons (hidden in custom mode)
+            var navLeftBtn = createNavButton('◀', function() { navigate(-1); });
+            var navRightBtn = createNavButton('▶', function() { navigate(1); });
 
-            // Navigation buttons
-            if (state.mode !== 'custom') {
-                wrapper.appendChild(createNavButton('◀', function() { navigate(-1); }));
+            if (state.mode === 'custom') {
+                navLeftBtn.style.display = 'none';
+                navRightBtn.style.display = 'none';
             }
 
-            // Period buttons
+            wrapper.appendChild(navLeftBtn);
+
+            // Period buttons - always include all modes (D, W, M, C)
             var periodBtns = document.createElement('div');
             periodBtns.style.cssText = 'display: flex; gap: 4px;';
 
-            ['day', 'week', 'month'].forEach(function(mode) {
+            ['day', 'week', 'month', 'custom'].forEach(function(mode) {
                 periodBtns.appendChild(createPeriodButton(mode, accentColor));
             });
 
-            if (hasCustomRange) {
-                periodBtns.appendChild(createPeriodButton('custom', accentColor));
-            }
-
             wrapper.appendChild(periodBtns);
-
-            if (state.mode !== 'custom') {
-                wrapper.appendChild(createNavButton('▶', function() { navigate(1); }));
-            }
+            wrapper.appendChild(navRightBtn);
 
             // Period label - store reference for updates
             labelElement = document.createElement('span');
@@ -171,7 +171,15 @@
             var range;
 
             if (state.mode === 'custom') {
-                range = calculateCustomRange();
+                // Custom mode: use settings if defined, otherwise keep dashboard timewindow
+                var hasCustomSettings = settings.customStartTime || settings.customEndTime;
+                if (hasCustomSettings) {
+                    range = calculateCustomRange();
+                } else {
+                    // No custom settings - don't change the timewindow, just update label
+                    updateLabel();
+                    return;
+                }
             } else {
                 range = calculateRange(state.mode, state.currentDate);
             }
@@ -296,10 +304,10 @@
         function formatPeriodLabel(mode, date) {
             var d = new Date(date);
 
-            // Use settings formats with fallbacks
-            var dayFormat = settings.dayFormat || 'D MMM YYYY';
-            var weekFormat = settings.weekFormat || 'D-D MMM';
-            var monthFormat = settings.monthFormat || 'MMM YYYY';
+            // Use settings formats with new defaults (German style)
+            var dayFormat = settings.dayFormat || 'DD.MM.YYYY';
+            var weekFormat = settings.weekFormat || 'DD.MM.YYYY - DD.MM.YYYY';
+            var monthFormat = settings.monthFormat || 'MMMM YYYY';
 
             switch (mode) {
                 case 'day':
@@ -308,29 +316,46 @@
                     var range = calculateRange('week', d);
                     var startD = new Date(range.start);
                     var endD = new Date(range.end);
-                    // For week format, handle start-end range
+
+                    // Check if format contains " - " separator for full date ranges
+                    if (weekFormat.indexOf(' - ') !== -1) {
+                        var parts = weekFormat.split(' - ');
+                        var startFormat = parts[0];
+                        var endFormat = parts[1] || parts[0];
+                        return ECOWidgetUtils.format.date(startD, startFormat) + ' - ' + ECOWidgetUtils.format.date(endD, endFormat);
+                    }
+
+                    // Legacy formats: D-D or DD-DD (day range within same month)
                     var weekStr = weekFormat;
-                    // Replace first D with start date, second D with end date
                     if (weekStr.indexOf('D-D') !== -1) {
                         weekStr = weekStr.replace('D-D', startD.getDate() + '-' + endD.getDate());
                     } else if (weekStr.indexOf('DD-DD') !== -1) {
                         weekStr = weekStr.replace('DD-DD', String(startD.getDate()).padStart(2, '0') + '-' + String(endD.getDate()).padStart(2, '0'));
                     } else {
-                        // Fallback: show range
-                        return ECOWidgetUtils.format.date(startD, 'D MMM') + ' - ' + ECOWidgetUtils.format.date(endD, 'D MMM');
+                        // Fallback: show range with default format
+                        return ECOWidgetUtils.format.date(startD, 'DD.MM.YYYY') + ' - ' + ECOWidgetUtils.format.date(endD, 'DD.MM.YYYY');
                     }
-                    // Replace remaining date parts with start date
                     return ECOWidgetUtils.format.date(startD, weekStr);
                 case 'month':
                     return ECOWidgetUtils.format.date(d, monthFormat);
                 case 'custom':
-                    var customRange = calculateCustomRange();
-                    if (customRange) {
-                        var s = new Date(customRange.start);
-                        var e = new Date(customRange.end);
-                        return ECOWidgetUtils.format.date(s, 'D.M.YY') + ' - ' + ECOWidgetUtils.format.date(e, 'D.M.YY');
+                    // Custom mode: show dashboard timewindow or settings range
+                    if (ctx && ctx.dashboard && ctx.dashboard.dashboardTimewindow) {
+                        var tw = ctx.dashboard.dashboardTimewindow;
+                        if (tw.history && tw.history.fixedTimewindow) {
+                            var s = new Date(tw.history.fixedTimewindow.startTimeMs);
+                            var e = new Date(tw.history.fixedTimewindow.endTimeMs);
+                            return ECOWidgetUtils.format.date(s, 'DD.MM.YY') + ' - ' + ECOWidgetUtils.format.date(e, 'DD.MM.YY');
+                        }
                     }
-                    return 'Custom';
+                    // Fallback: use custom range from settings if defined
+                    var customRange = calculateCustomRange();
+                    if (customRange && (settings.customStartTime || settings.customEndTime)) {
+                        var cs = new Date(customRange.start);
+                        var ce = new Date(customRange.end);
+                        return ECOWidgetUtils.format.date(cs, 'DD.MM.YY') + ' - ' + ECOWidgetUtils.format.date(ce, 'DD.MM.YY');
+                    }
+                    return 'Dashboard';
             }
             return '';
         }
@@ -408,7 +433,7 @@
                 if (defaultInstance) defaultInstance.selectMode(mode);
             },
             getState: function() {
-                return defaultInstance ? defaultInstance.getState() : { mode: 'day', currentDate: new Date() };
+                return defaultInstance ? defaultInstance.getState() : { mode: 'custom', currentDate: new Date() };
             },
             setState: function(newState) {
                 if (defaultInstance) defaultInstance.setState(newState);
@@ -761,20 +786,23 @@
         },
 
         date: function(date, format) {
-            var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            var monthsShort = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            var monthsFull = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
             var d = new Date(date);
 
             format = format || 'D MMM YYYY';
 
             // Use placeholders to avoid partial replacements
+            // Order matters: MMMM before MMM to avoid partial match
             var result = format
                 .replace('YYYY', '{{YYYY}}')
                 .replace('YY', '{{YY}}')
+                .replace('MMMM', '{{MMMM}}')
                 .replace('MMM', '{{MMM}}')
                 .replace('MM', '{{MM}}')
                 .replace('DD', '{{DD}}');
 
-            // Now replace single D and M (only if not already replaced as DD/MM/MMM)
+            // Now replace single D and M (only if not already replaced as DD/MM/MMM/MMMM)
             result = result
                 .replace(/D(?!D|\})/g, '{{D}}')
                 .replace(/M(?!M|\})/g, '{{M}}');
@@ -783,7 +811,8 @@
             return result
                 .replace('{{YYYY}}', d.getFullYear())
                 .replace('{{YY}}', String(d.getFullYear()).slice(-2))
-                .replace('{{MMM}}', months[d.getMonth()])
+                .replace('{{MMMM}}', monthsFull[d.getMonth()])
+                .replace('{{MMM}}', monthsShort[d.getMonth()])
                 .replace('{{MM}}', String(d.getMonth() + 1).padStart(2, '0'))
                 .replace('{{M}}', String(d.getMonth() + 1))
                 .replace('{{DD}}', String(d.getDate()).padStart(2, '0'))
@@ -844,7 +873,7 @@
     // ========================================
     // Version Info
     // ========================================
-    ECOWidgetUtils.version = '1.2.0';
+    ECOWidgetUtils.version = '1.3.0';
 
     // Export to global scope
     global.ECOWidgetUtils = ECOWidgetUtils;
