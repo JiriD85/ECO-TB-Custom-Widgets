@@ -99,6 +99,30 @@ self.onDestroy = function() {
 // Entity Attributes
 // ========================================
 function fetchEntityAttributes(callback) {
+    var settings = self.ctx.settings || {};
+
+    // Extract attribute names from settings (find ${...} patterns)
+    var attributesToFetch = [];
+    var settingsToCheck = [
+        settings.twCustomStartTime,
+        settings.twCustomEndTime
+    ];
+
+    settingsToCheck.forEach(function(val) {
+        if (val && typeof val === 'string') {
+            var match = val.match(/^\$\{(.+)\}$/);
+            if (match && attributesToFetch.indexOf(match[1]) === -1) {
+                attributesToFetch.push(match[1]);
+            }
+        }
+    });
+
+    // No attributes to fetch
+    if (attributesToFetch.length === 0) {
+        callback();
+        return;
+    }
+
     // Get first entity from datasources
     if (!self.ctx.datasources || self.ctx.datasources.length === 0) {
         callback();
@@ -114,40 +138,11 @@ function fetchEntityAttributes(callback) {
     var entityId = ds.entity.id.id;
     var entityType = ds.entity.id.entityType;
 
-    // Use ThingsBoard attribute service
-    if (self.ctx.attributeService) {
-        self.ctx.attributeService.getEntityAttributes(
-            { id: entityId, entityType: entityType },
-            'SERVER_SCOPE',
-            null,  // All attributes
-            function(attributes) {
-                // Store attributes
-                if (attributes) {
-                    attributes.forEach(function(attr) {
-                        entityAttributes[attr.key] = attr.value;
-                    });
-                }
-                // Also fetch shared attributes
-                self.ctx.attributeService.getEntityAttributes(
-                    { id: entityId, entityType: entityType },
-                    'SHARED_SCOPE',
-                    null,
-                    function(sharedAttrs) {
-                        if (sharedAttrs) {
-                            sharedAttrs.forEach(function(attr) {
-                                entityAttributes[attr.key] = attr.value;
-                            });
-                        }
-                        callback();
-                    },
-                    function() { callback(); }
-                );
-            },
-            function() { callback(); }
-        );
-    } else if (self.ctx.http) {
-        // Fallback: use HTTP API
-        var url = '/api/plugins/telemetry/' + entityType + '/' + entityId + '/values/attributes';
+    // Fetch specific attributes via HTTP API
+    var keysParam = attributesToFetch.join(',');
+    var url = '/api/plugins/telemetry/' + entityType + '/' + entityId + '/values/attributes?keys=' + keysParam;
+
+    if (self.ctx.http) {
         self.ctx.http.get(url).subscribe(
             function(response) {
                 if (response && Array.isArray(response)) {
@@ -155,11 +150,16 @@ function fetchEntityAttributes(callback) {
                         entityAttributes[attr.key] = attr.value;
                     });
                 }
+                console.log('ECO Timeseries: Loaded attributes', entityAttributes);
                 callback();
             },
-            function() { callback(); }
+            function(error) {
+                console.warn('ECO Timeseries: Failed to fetch attributes', error);
+                callback();
+            }
         );
     } else {
+        console.warn('ECO Timeseries: HTTP service not available');
         callback();
     }
 }
