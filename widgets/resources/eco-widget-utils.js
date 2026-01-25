@@ -81,27 +81,26 @@
             var wrapper = document.createElement('div');
             wrapper.style.cssText = 'display: flex; align-items: center; gap: 6px; background: ' + accentColor + '; border-radius: 6px; padding: 6px 10px; box-shadow: 0 2px 6px rgba(0,0,0,0.12);';
 
-            // Navigation buttons (hidden in custom mode)
-            var navLeftBtn = createNavButton('◀', function() { navigate(-1); });
-            var navRightBtn = createNavButton('▶', function() { navigate(1); });
-
-            if (state.mode === 'custom') {
-                navLeftBtn.style.display = 'none';
-                navRightBtn.style.display = 'none';
-            }
-
-            wrapper.appendChild(navLeftBtn);
-
             // Period buttons - always include all modes (D, W, M, C)
             var periodBtns = document.createElement('div');
             periodBtns.style.cssText = 'display: flex; gap: 4px;';
 
-            ['day', 'week', 'month', 'custom'].forEach(function(mode) {
-                periodBtns.appendChild(createPeriodButton(mode, accentColor));
+            ['day', 'week', 'month', 'custom'].forEach(function(m) {
+                periodBtns.appendChild(createPeriodButton(m, accentColor));
             });
 
-            wrapper.appendChild(periodBtns);
-            wrapper.appendChild(navRightBtn);
+            // Navigation buttons (only shown for D, W, M modes)
+            var navLeftBtn = createNavButton('◀', function() { navigate(-1); });
+            var navRightBtn = createNavButton('▶', function() { navigate(1); });
+
+            // Only show navigation for non-custom modes
+            if (state.mode !== 'custom') {
+                wrapper.appendChild(navLeftBtn);
+                wrapper.appendChild(periodBtns);
+                wrapper.appendChild(navRightBtn);
+            } else {
+                wrapper.appendChild(periodBtns);
+            }
 
             // Period label - store reference for updates
             labelElement = document.createElement('span');
@@ -355,9 +354,16 @@
             var range;
 
             if (state.mode === 'custom') {
-                // Custom mode: use settings if defined, otherwise keep dashboard timewindow
-                var hasCustomSettings = settings.customStartTime || settings.customEndTime;
-                if (hasCustomSettings) {
+                // Custom mode priority:
+                // 1. User-selected range via datepicker (state.customStart/customEnd)
+                // 2. Settings customStartTime/customEndTime
+                // 3. Keep dashboard timewindow (no change)
+
+                if (state.customStart && state.customEnd) {
+                    // User selected a custom range via datepicker
+                    range = { start: state.customStart, end: state.customEnd };
+                } else if (settings.customStartTime) {
+                    // Settings define custom start (end optional - defaults to now)
                     range = calculateCustomRange();
                 } else {
                     // No custom settings - don't change the timewindow, just update label
@@ -365,6 +371,9 @@
                     return;
                 }
             } else {
+                // D, W, M modes - clear any user-selected custom range
+                state.customStart = null;
+                state.customEnd = null;
                 range = calculateRange(state.mode, state.currentDate);
             }
 
@@ -431,13 +440,15 @@
             var startMs = resolveTimeValue(startStr);
             var endMs = resolveTimeValue(endStr);
 
+            // If start is not defined, use start of today
             if (startMs === null) {
                 var now = new Date();
                 startMs = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime();
             }
+
+            // If end is not defined, use NOW (not end of today)
             if (endMs === null) {
-                var now2 = new Date();
-                endMs = new Date(now2.getFullYear(), now2.getMonth(), now2.getDate(), 23, 59, 59, 999).getTime();
+                endMs = Date.now();
             }
 
             return { start: startMs, end: endMs };
@@ -1063,7 +1074,7 @@
     // ========================================
     // Version Info
     // ========================================
-    ECOWidgetUtils.version = '1.4.0';
+    ECOWidgetUtils.version = '1.5.0';
 
     // Export to global scope
     global.ECOWidgetUtils = ECOWidgetUtils;
