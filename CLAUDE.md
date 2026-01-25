@@ -42,8 +42,14 @@ sync/                    # ThingsBoard sync tool
 widgets/
 ├── bundles/             # Widget bundle definitions (one per bundle)
 │   └── eco_custom_widgets.json
-└── types/               # Individual widget definitions (one per widget)
-    └── eco_*.json
+├── types/               # Individual widget definitions (one per widget)
+│   └── eco_*.json
+└── resources/           # Shared JavaScript libraries
+    └── eco-widget-utils.js  # Common utilities for all ECO widgets
+
+scripts/                 # Development utilities
+├── inject-tw-selector.js    # Inject TW selector into widgets
+└── update-settings-schema.js # Update widget settings schemas
 
 backups/                 # Auto-created on sync, timestamped folders
 ```
@@ -94,17 +100,255 @@ backups/                 # Auto-created on sync, timestamped folders
 
 ## Common Widget Settings
 
-All ECharts widgets share these settings in `settingsSchema`:
+All ECO widgets MUST include these standardized setting groups using the `groupInfoes` pattern for organized UI display.
+
+### Required Settings Groups (in order)
+
+1. **Chart Settings** - Widget-specific chart configuration (varies per widget)
+2. **Legend Settings** - Statistics card display options
+3. **Y-Axis Settings** - Axis min/max configuration (if applicable)
+4. **Data Processing** - Outlier removal, smoothing
+5. **Toolbox Settings** - Export, data view, zoom controls
+6. **Timewindow Selector** - Custom timewindow controls
+
+### groupInfoes Pattern (REQUIRED for all widgets)
+
 ```json
-{
-  "enableZoomSync": true,        // Sync zoom with dashboard timewindow
-  "zoomSyncDebounce": 150,       // Debounce ms
-  "showDataZoomSlider": true,    // Zoom slider control
-  "enableExport": true,          // PNG/Data export toolbox
-  "showTooltip": true,
-  "showLegend": true
+"settingsSchema": {
+  "schema": { ... },
+  "form": [
+    [ /* Group 0: Chart Settings - widget-specific */ ],
+    [ /* Group 1: Legend Settings */ ],
+    [ /* Group 2: Y-Axis Settings */ ],
+    [ /* Group 3: Data Processing */ ],
+    [ /* Group 4: Toolbox Settings */ ],
+    [ /* Group 5: Timewindow Selector */ ]
+  ],
+  "groupInfoes": [
+    { "formIndex": 0, "GroupTitle": "Chart Settings" },
+    { "formIndex": 1, "GroupTitle": "Legend Settings" },
+    { "formIndex": 2, "GroupTitle": "Y-Axis Settings" },
+    { "formIndex": 3, "GroupTitle": "Data Processing" },
+    { "formIndex": 4, "GroupTitle": "Toolbox Settings" },
+    { "formIndex": 5, "GroupTitle": "Timewindow Selector" }
+  ]
 }
 ```
+
+### Legend Settings (Standard)
+```json
+// Schema properties:
+"showLegend": { "title": "Show Legend", "type": "boolean", "default": true },
+"legendStyle": { "title": "Legend Style", "type": "string", "default": "classic", "enum": ["classic", "card"] },
+"legendPosition": { "title": "Legend Position", "type": "string", "default": "bottom", "enum": ["top", "bottom", "left", "right"] },
+"legendAlign": { "title": "Legend Alignment", "type": "string", "default": "center", "enum": ["left", "center", "right"] },
+"legendCardColorMode": { "title": "Card Color Mode", "type": "string", "default": "auto", "enum": ["auto", "manual", "gradient"] },
+"legendCardColor": { "title": "Card Color", "type": "string", "default": "#2196F3" },
+"legendValues": { "title": "Statistics to Display", "type": "array", "items": { "type": "string" }, "default": ["current"] },
+"showTimestamp": { "title": "Show Timestamp", "type": "boolean", "default": true },
+"timestampFormat": { "title": "Timestamp Format", "type": "string", "default": "YYYY-MM-DD HH:mm:ss" }
+```
+
+### Data Processing Settings (Standard)
+```json
+// Schema properties:
+"removeOutliers": { "title": "Remove Outliers", "type": "boolean", "default": false },
+"outlierMethod": { "title": "Outlier Method", "type": "string", "default": "iqr", "enum": ["iqr", "zscore", "manual"] },
+"outlierIqrMultiplier": { "title": "IQR Multiplier", "type": "number", "default": 1.5 },
+"outlierZscoreThreshold": { "title": "Z-Score Threshold", "type": "number", "default": 3 },
+"outlierMinValue": { "title": "Minimum Value", "type": "number" },
+"outlierMaxValue": { "title": "Maximum Value", "type": "number" },
+"smoothingEnabled": { "title": "Enable Smoothing", "type": "boolean", "default": false },
+"smoothingWindowMinutes": { "title": "Smoothing Window (minutes)", "type": "number", "default": 15 }
+```
+
+### Toolbox Settings (Standard)
+```json
+// Schema properties:
+"showToolbox": { "title": "Show Toolbox", "type": "boolean", "default": true },
+"toolboxFeatures": { "title": "Toolbox Features", "type": "array", "items": { "type": "string" }, "default": ["saveAsImage", "dataView", "dataZoom", "restore"] }
+```
+
+### Timewindow Selector Settings (Standard)
+```json
+// Schema properties:
+"showTimewindowSelector": { "title": "Show Timewindow Selector", "type": "boolean", "default": false },
+"twSelectorColor": { "title": "Selector Color", "type": "string", "default": "" },
+"twSelectorPosition": { "title": "Selector Position", "type": "string", "default": "center", "enum": ["left", "center", "right"] },
+"twSelectorDayFormat": { "title": "Day Format", "type": "string", "default": "D MMM YYYY" },
+"twSelectorWeekFormat": { "title": "Week Format", "type": "string", "default": "D-D MMM" },
+"twSelectorMonthFormat": { "title": "Month Format", "type": "string", "default": "MMM YYYY" },
+"twCustomStartTime": { "title": "Custom Start Time", "type": "string", "default": "" },
+"twCustomEndTime": { "title": "Custom End Time", "type": "string", "default": "" },
+"twAggregationType": { "title": "Aggregation", "type": "string", "default": "NONE", "enum": ["NONE", "AVG", "MIN", "MAX", "SUM", "COUNT"] },
+"twMaxDataPoints": { "title": "Max Data Points", "type": "number", "default": 100000 }
+```
+
+### Timewindow Selector - applyTimewindow() Pattern (CRITICAL)
+```javascript
+// The timewindow selector MUST respect the widget's useDashboardTimewindow setting
+function applyTimewindow() {
+    var range = calculateTimeRange(twState.mode, twState.currentDate);
+    if (!range) return;
+
+    var timewindow = {
+        history: {
+            fixedTimewindow: { startTimeMs: range.start, endTimeMs: range.end },
+            historyType: 0
+        },
+        aggregation: {
+            type: twSettings.aggregationType || 'NONE',
+            limit: twSettings.maxDataPoints || 100000
+        }
+    };
+
+    // CRITICAL: Check if widget uses dashboard timewindow or its own
+    var useDashboardTimewindow = self.ctx.widget.config.useDashboardTimewindow;
+
+    if (useDashboardTimewindow !== false) {
+        // Use dashboard timewindow (affects all widgets)
+        if (self.ctx.dashboard && self.ctx.dashboard.updateDashboardTimewindow) {
+            self.ctx.dashboard.updateDashboardTimewindow(timewindow);
+        } else if (self.ctx.dashboard && self.ctx.dashboard.onUpdateTimewindow) {
+            self.ctx.dashboard.onUpdateTimewindow(range.start, range.end);
+        }
+    } else {
+        // Use widget's own timewindow (affects only this widget)
+        if (self.ctx.timewindowFunctions && self.ctx.timewindowFunctions.onUpdateTimewindow) {
+            self.ctx.timewindowFunctions.onUpdateTimewindow(range.start, range.end);
+        }
+    }
+}
+```
+
+### Template HTML with Timewindow Selector
+```html
+<div id="widget-wrapper" style="width: 100%; height: 100%; display: flex; flex-direction: column;">
+  <div id="timewindow-selector" style="display: none;"></div>
+  <div id="stats-card-top" style="padding: 4px 8px; display: none;"></div>
+  <div style="flex: 1; min-height: 0; display: flex;">
+    <div id="stats-card-left" style="padding: 4px; display: none;"></div>
+    <div id="chart-container" style="flex: 1; min-height: 0;"></div>
+    <div id="stats-card-right" style="padding: 4px; display: none;"></div>
+  </div>
+  <div id="stats-card-bottom" style="padding: 4px 8px; display: none;"></div>
+</div>
+```
+
+### Reference Widget
+Use **eco_timeseries_zoom_sync** as the reference implementation for all standard settings.
+
+---
+
+## ECO Widget Utils Library
+
+**IMPORTANT: For new widgets, use the shared utility library instead of copying code.**
+
+The `eco-widget-utils.js` library provides common functionality used across all ECO widgets. This centralizes maintenance - changes only need to be made once.
+
+### Loading the Library
+
+Add to widget resources (in widget JSON or ThingsBoard UI):
+```json
+"resources": [
+  { "url": "https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js" },
+  { "url": "https://gist.githubusercontent.com/JiriD85/1ad58c8b28bda388938173e534b4663d/raw/eco-widget-utils.js" }
+]
+```
+
+**Note:** The library is hosted on GitHub Gist. To update, edit the gist or run:
+```bash
+gh gist edit 1ad58c8b28bda388938173e534b4663d widgets/resources/eco-widget-utils.js
+```
+
+### Available Modules
+
+#### Timewindow Selector
+```javascript
+var utils = window.ECOWidgetUtils;
+
+// In onInit:
+var twContainer = self.ctx.$container.find('#timewindow-selector')[0];
+utils.timewindow.init(twContainer, {
+    color: settings.twSelectorColor,
+    position: settings.twSelectorPosition,
+    dayFormat: settings.twSelectorDayFormat,
+    customStartTime: settings.twCustomStartTime,
+    customEndTime: settings.twCustomEndTime,
+    aggregationType: settings.twAggregationType,
+    maxDataPoints: settings.twMaxDataPoints
+}, self.ctx);
+
+// In updateChart:
+if (settings.showTimewindowSelector) {
+    utils.timewindow.render();
+} else {
+    utils.timewindow.hide();
+}
+```
+
+#### Statistics
+```javascript
+var stats = utils.stats.calculate(values);
+// Returns: { mean, median, min, max, sum, count }
+
+var p90 = utils.stats.percentile(sortedValues, 90);
+var stdDev = utils.stats.stdDev(values, stats.mean);
+```
+
+#### Data Processing
+```javascript
+// Remove outliers
+var result = utils.dataProcessing.removeOutliers(values, timestamps, {
+    method: 'iqr',  // 'iqr', 'zscore', or 'manual'
+    iqrMultiplier: 1.5,
+    zscoreThreshold: 3,
+    minValue: 0,
+    maxValue: 100
+});
+// Returns: { values, timestamps, removed }
+
+// Smoothing
+var windowSize = utils.dataProcessing.getWindowSizeFromMinutes(timestamps, 15);
+var smoothed = utils.dataProcessing.movingAverage(values, windowSize);
+```
+
+#### Statistics Card
+```javascript
+utils.statsCard.render(statsCardContainers, {
+    showLegend: true,
+    legendStyle: 'card',
+    legendPosition: 'bottom',
+    legendAlign: 'center',
+    legendCardColorMode: 'auto',
+    legendValues: ['current', 'min', 'max', 'mean'],
+    showTimestamp: true,
+    timestampFormat: 'YYYY-MM-DD HH:mm:ss',
+    allStats: [{ label: 'Temp', units: '°C', decimals: 1, color: '#2196F3', stats: stats }]
+});
+```
+
+#### Formatting
+```javascript
+utils.format.value(123.456, 2);  // "123.46"
+utils.format.timestamp(Date.now(), 'YYYY-MM-DD HH:mm:ss');
+utils.format.date(new Date(), 'D MMM YYYY');  // "25 Jan 2026"
+```
+
+#### Color Utilities
+```javascript
+utils.color.adjust('#2196F3', -40);  // Darken
+utils.color.adjust('#2196F3', 40);   // Lighten
+utils.color.getDefault(0);  // '#2196F3' (color palette)
+```
+
+### Migration Path
+
+When migrating existing widgets to use the library:
+1. Add the library URL to widget resources
+2. Replace inline functions with library calls
+3. Remove duplicated code
+4. Test thoroughly
 
 ## Editing controllerScript
 
@@ -383,14 +627,25 @@ self.typeParameters = function() {
 
 2. **Edit source file:** `widgets/src/eco_widget_name.js`
 
-3. **Update JSON:** Run the conversion script or manually update `controllerScript` in `widgets/types/eco_widget_name.json`
+3. **CRITICAL - Update JSON from source:** The sync script only uploads JSON files. You MUST update the `controllerScript` in the JSON file before syncing:
+   ```bash
+   node -e "
+   const fs = require('fs');
+   const widgetName = 'eco_widget_name';  // Change this
+   const js = fs.readFileSync('widgets/src/' + widgetName + '.js', 'utf8');
+   const json = JSON.parse(fs.readFileSync('widgets/types/' + widgetName + '.json', 'utf8'));
+   json.descriptor.controllerScript = js;
+   fs.writeFileSync('widgets/types/' + widgetName + '.json', JSON.stringify(json, null, 2));
+   console.log('Updated ' + widgetName + '.json');
+   "
+   ```
 
 4. **Sync to server:**
    ```bash
    node sync/sync.js sync
    ```
 
-5. **Test in ThingsBoard:** Refresh dashboard, check widget preview
+5. **Test in ThingsBoard:** Hard reload (Cmd+Shift+R) to bypass cache, check widget preview
 
 ### Common Issues & Solutions
 
@@ -403,6 +658,78 @@ self.typeParameters = function() {
 | Settings not saving | Wrong schema type | Check type matches (string, boolean, array) |
 | Color picker not working | Wrong form type | Use `"type": "color"` in form |
 | Conditional field not hiding | Wrong condition syntax | Use `model.fieldName === value` |
+| Widget bottom cut off on load | ECharts captures size before stats cards render | Use resize fix pattern (see below) |
+| Changes not appearing after sync | JSON controllerScript not updated | Run conversion script before sync (step 3) |
+
+### Resize Fix Pattern (Stats Cards + ECharts)
+
+When widgets have DOM elements (like stats cards) that render after ECharts initialization, the chart captures the wrong container size. Use this pattern to fix:
+
+```javascript
+var chart = null;
+var chartContainer = null;
+var resizeObserver = null;
+
+self.onInit = function() {
+    chartContainer = self.ctx.$container.find('#chart-container')[0];
+    chart = echarts.init(chartContainer);
+    updateChart();
+
+    // Multiple delayed resizes for ThingsBoard's async layout
+    [100, 250, 500, 1000].forEach(function(delay) {
+        setTimeout(function() {
+            if (chart && chartContainer) {
+                chart.resize({
+                    width: chartContainer.offsetWidth,
+                    height: chartContainer.offsetHeight
+                });
+            }
+        }, delay);
+    });
+
+    // ResizeObserver for dynamic container changes
+    if (typeof ResizeObserver !== 'undefined') {
+        resizeObserver = new ResizeObserver(function() {
+            requestAnimationFrame(function() {
+                if (chart && chartContainer) {
+                    chart.resize({
+                        width: chartContainer.offsetWidth,
+                        height: chartContainer.offsetHeight
+                    });
+                }
+            });
+        });
+        resizeObserver.observe(chartContainer);
+    }
+};
+
+self.onResize = function() {
+    if (chart && chartContainer) {
+        chart.resize({
+            width: chartContainer.offsetWidth,
+            height: chartContainer.offsetHeight
+        });
+    }
+};
+
+self.onDestroy = function() {
+    if (resizeObserver) {
+        resizeObserver.disconnect();
+        resizeObserver = null;
+    }
+    if (chart) {
+        chart.dispose();
+        chart = null;
+    }
+};
+```
+
+**Key points:**
+- Always use explicit dimensions: `chart.resize({ width: w, height: h })`
+- `chart.resize()` without params often fails to detect new container size
+- Multiple setTimeout delays handle ThingsBoard's async widget loading
+- ResizeObserver handles dynamic container changes (e.g., after stats cards render)
+- Clean up ResizeObserver in onDestroy to prevent memory leaks
 
 ### Multi-Series Stats Card Pattern
 

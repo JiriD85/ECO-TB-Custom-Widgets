@@ -1,31 +1,174 @@
 {
   "fqn": "eco_custom_widgets.eco_load_duration_curve",
-  "name": "Load Duration Curve (Dauerkennlinie)",
+  "name": "ECO Load Duration Curve",
   "deprecated": false,
   "image": "tb-image;/api/images/system/chart.svg",
-  "description": "Displays load data as a duration curve (Dauerkennlinie) with automatic threshold detection for base load and peak load. Supports split view with original time series above and duration curve below.",
+  "description": "Duration curve and load profile with outlier detection, thresholds and statistical lines",
   "descriptor": {
     "type": "timeseries",
-    "sizeX": 12,
+    "sizeX": 10,
     "sizeY": 8,
     "resources": [
       {
         "url": "https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"
       }
     ],
-    "templateHtml": "<div id=\"chart-container\" style=\"width: 100%; height: 100%;\"></div>",
-    "templateCss": "#chart-container { position: relative; }",
-    "controllerScript": "var chart = null;\nvar chartContainer = null;\n\nself.onInit = function() {\n    chartContainer = self.ctx.$container.find('#chart-container')[0];\n    if (!chartContainer) {\n        console.error('Chart container not found');\n        return;\n    }\n    \n    // Wait for ECharts to load\n    if (typeof echarts === 'undefined') {\n        console.error('ECharts not loaded');\n        return;\n    }\n    \n    chart = echarts.init(chartContainer);\n    updateChart();\n};\n\nself.onDataUpdated = function() {\n    updateChart();\n};\n\nfunction updateChart() {\n    if (!chart) return;\n    \n    var settings = self.ctx.settings || {};\n    var displayMode = settings.displayMode || 'durationCurveOnly';\n    var autoDetect = settings.autoDetectThresholds !== false;\n    var baseLoadPercentile = settings.baseLoadPercentile || 10;\n    var peakLoadPercentile = settings.peakLoadPercentile || 95;\n    var manualBaseLoad = settings.manualBaseLoad;\n    var manualPeakLoad = settings.manualPeakLoad;\n    var baseLoadColor = settings.baseLoadColor || '#4CAF50';\n    var peakLoadColor = settings.peakLoadColor || '#F44336';\n    var showThresholdLabels = settings.showThresholdLabels !== false;\n    var enableExport = settings.enableExport !== false;\n    \n    // Get data from datasources\n    var data = self.ctx.data || [];\n    if (!data.length || !data[0].data || !data[0].data.length) {\n        chart.setOption({\n            title: { text: 'No data available', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    var seriesData = data[0].data;\n    var dataKey = data[0].dataKey || {};\n    var label = dataKey.label || dataKey.name || 'Value';\n    var units = dataKey.units || self.ctx.units || '';\n    var color = dataKey.color || '#2196F3';\n    \n    // Extract values and timestamps\n    var values = seriesData.map(function(d) { return d[1]; }).filter(function(v) { return v !== null && !isNaN(v); });\n    var timestamps = seriesData.map(function(d) { return d[0]; });\n    \n    if (values.length === 0) {\n        chart.setOption({\n            title: { text: 'No valid data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    // Sort values descending for duration curve\n    var sortedValues = values.slice().sort(function(a, b) { return b - a; });\n    \n    // Calculate percentages for x-axis (0% to 100%)\n    var durationData = sortedValues.map(function(v, i) {\n        return [Math.round((i / (sortedValues.length - 1)) * 100 * 10) / 10, v];\n    });\n    \n    // Calculate thresholds\n    var baseLoadValue, peakLoadValue;\n    if (autoDetect && manualBaseLoad === null) {\n        var baseIdx = Math.floor(sortedValues.length * (1 - baseLoadPercentile / 100));\n        baseLoadValue = sortedValues[Math.min(baseIdx, sortedValues.length - 1)];\n    } else if (manualBaseLoad !== null && manualBaseLoad !== undefined) {\n        baseLoadValue = manualBaseLoad;\n    }\n    \n    if (autoDetect && manualPeakLoad === null) {\n        var peakIdx = Math.floor(sortedValues.length * (1 - peakLoadPercentile / 100));\n        peakLoadValue = sortedValues[Math.max(0, peakIdx)];\n    } else if (manualPeakLoad !== null && manualPeakLoad !== undefined) {\n        peakLoadValue = manualPeakLoad;\n    }\n    \n    // Build option based on display mode\n    var option;\n    \n    if (displayMode === 'splitView') {\n        // Split view: Time series on top, Duration curve below\n        var timeSeriesData = seriesData.map(function(d) { return [d[0], d[1]]; });\n        \n        option = {\n            grid: [\n                { left: 60, right: 40, top: 40, height: '35%' },\n                { left: 60, right: 40, top: '55%', height: '35%' }\n            ],\n            title: [\n                { text: label + ' - Time Series', left: 'center', top: 5, textStyle: { fontSize: 14 } },\n                { text: 'Duration Curve (Dauerkennlinie)', left: 'center', top: '50%', textStyle: { fontSize: 14 } }\n            ],\n            tooltip: {\n                trigger: 'axis',\n                formatter: function(params) {\n                    if (params[0].axisIndex === 0) {\n                        var d = new Date(params[0].value[0]);\n                        return d.toLocaleString() + '<br/>' + label + ': ' + params[0].value[1].toFixed(2) + ' ' + units;\n                    } else {\n                        return params[0].value[0] + '% of time<br/>' + label + ': ' + params[0].value[1].toFixed(2) + ' ' + units;\n                    }\n                }\n            },\n            toolbox: enableExport ? {\n                feature: {\n                    saveAsImage: { title: 'Save as PNG' },\n                    dataView: { title: 'Data View', readOnly: true }\n                },\n                right: 10\n            } : {},\n            xAxis: [\n                {\n                    type: 'time',\n                    gridIndex: 0,\n                    axisLabel: { fontSize: 10 }\n                },\n                {\n                    type: 'value',\n                    gridIndex: 1,\n                    name: '% of Time',\n                    nameLocation: 'middle',\n                    nameGap: 25,\n                    min: 0,\n                    max: 100,\n                    axisLabel: { formatter: '{value}%', fontSize: 10 }\n                }\n            ],\n            yAxis: [\n                {\n                    type: 'value',\n                    gridIndex: 0,\n                    name: units,\n                    axisLabel: { fontSize: 10 }\n                },\n                {\n                    type: 'value',\n                    gridIndex: 1,\n                    name: units,\n                    axisLabel: { fontSize: 10 }\n                }\n            ],\n            dataZoom: [\n                { type: 'inside', xAxisIndex: [0, 1] },\n                { type: 'slider', xAxisIndex: [0, 1], bottom: 5, height: 20 }\n            ],\n            series: [\n                {\n                    name: label,\n                    type: 'line',\n                    xAxisIndex: 0,\n                    yAxisIndex: 0,\n                    data: timeSeriesData,\n                    smooth: true,\n                    symbol: 'none',\n                    lineStyle: { color: color, width: 1.5 },\n                    areaStyle: { color: color, opacity: 0.1 }\n                },\n                {\n                    name: 'Duration Curve',\n                    type: 'line',\n                    xAxisIndex: 1,\n                    yAxisIndex: 1,\n                    data: durationData,\n                    smooth: true,\n                    symbol: 'none',\n                    lineStyle: { color: color, width: 2 },\n                    areaStyle: { color: color, opacity: 0.2 },\n                    markLine: {\n                        silent: true,\n                        lineStyle: { type: 'dashed' },\n                        label: { show: showThresholdLabels, position: 'end', fontSize: 10 },\n                        data: [\n                            baseLoadValue !== undefined ? { yAxis: baseLoadValue, lineStyle: { color: baseLoadColor }, label: { formatter: 'Base: ' + baseLoadValue.toFixed(1) + ' ' + units } } : null,\n                            peakLoadValue !== undefined ? { yAxis: peakLoadValue, lineStyle: { color: peakLoadColor }, label: { formatter: 'Peak: ' + peakLoadValue.toFixed(1) + ' ' + units } } : null\n                        ].filter(function(x) { return x !== null; })\n                    }\n                }\n            ]\n        };\n    } else {\n        // Duration curve only (default)\n        option = {\n            title: {\n                text: 'Duration Curve - ' + label,\n                left: 'center',\n                textStyle: { fontSize: 14 }\n            },\n            tooltip: {\n                trigger: 'axis',\n                formatter: function(params) {\n                    return params[0].value[0] + '% of time exceeded<br/>' + label + ': ' + params[0].value[1].toFixed(2) + ' ' + units;\n                }\n            },\n            toolbox: enableExport ? {\n                feature: {\n                    saveAsImage: { title: 'Save as PNG' },\n                    dataView: { title: 'Data View', readOnly: true }\n                },\n                right: 10\n            } : {},\n            grid: {\n                left: 60,\n                right: 40,\n                top: 50,\n                bottom: 60\n            },\n            xAxis: {\n                type: 'value',\n                name: '% of Time',\n                nameLocation: 'middle',\n                nameGap: 30,\n                min: 0,\n                max: 100,\n                axisLabel: { formatter: '{value}%' }\n            },\n            yAxis: {\n                type: 'value',\n                name: units,\n                nameLocation: 'middle',\n                nameGap: 40\n            },\n            dataZoom: [\n                { type: 'inside' },\n                { type: 'slider', bottom: 10, height: 20 }\n            ],\n            series: [{\n                name: label,\n                type: 'line',\n                data: durationData,\n                smooth: true,\n                symbol: 'none',\n                lineStyle: { color: color, width: 2 },\n                areaStyle: {\n                    color: {\n                        type: 'linear',\n                        x: 0, y: 0, x2: 0, y2: 1,\n                        colorStops: [\n                            { offset: 0, color: color },\n                            { offset: 1, color: 'rgba(255,255,255,0.2)' }\n                        ]\n                    }\n                },\n                markLine: {\n                    silent: true,\n                    lineStyle: { type: 'dashed', width: 2 },\n                    label: { show: showThresholdLabels, position: 'end' },\n                    data: [\n                        baseLoadValue !== undefined ? {\n                            yAxis: baseLoadValue,\n                            lineStyle: { color: baseLoadColor },\n                            label: { formatter: 'Base Load: ' + baseLoadValue.toFixed(1) + ' ' + units, color: baseLoadColor }\n                        } : null,\n                        peakLoadValue !== undefined ? {\n                            yAxis: peakLoadValue,\n                            lineStyle: { color: peakLoadColor },\n                            label: { formatter: 'Peak Load: ' + peakLoadValue.toFixed(1) + ' ' + units, color: peakLoadColor }\n                        } : null\n                    ].filter(function(x) { return x !== null; })\n                },\n                markArea: {\n                    silent: true,\n                    data: [\n                        baseLoadValue !== undefined ? [{\n                            yAxis: 0,\n                            itemStyle: { color: baseLoadColor, opacity: 0.05 }\n                        }, {\n                            yAxis: baseLoadValue\n                        }] : null,\n                        peakLoadValue !== undefined ? [{\n                            yAxis: peakLoadValue,\n                            itemStyle: { color: peakLoadColor, opacity: 0.05 }\n                        }, {\n                            yAxis: Math.max.apply(null, sortedValues) * 1.1\n                        }] : null\n                    ].filter(function(x) { return x !== null; })\n                }\n            }]\n        };\n    }\n    \n    chart.setOption(option, true);\n}\n\nself.onResize = function() {\n    if (chart) {\n        chart.resize();\n    }\n};\n\nself.onDestroy = function() {\n    if (chart) {\n        chart.dispose();\n        chart = null;\n    }\n};\n\nself.typeParameters = function() {\n    return {\n        previewWidth: '100%',\n        embedTitlePanel: false,\n        dataKeySettingsFunction: function() { return {}; },\n        defaultDataKeysFunction: function() {\n            return [{ name: 'power', label: 'Power', type: 'timeseries', units: 'kW', decimals: 2 }];\n        }\n    };\n};\n",
+    "templateHtml": "<div id=\"widget-wrapper\" style=\"width: 100%; height: 100%; display: flex; flex-direction: column;\"><div id=\"timewindow-selector\" style=\"display: none;\"></div><div id=\"stats-card-top\" style=\"padding: 4px 8px; display: none;\"></div><div style=\"flex: 1; min-height: 0; display: flex;\"><div id=\"stats-card-left\" style=\"padding: 4px; display: none;\"></div><div id=\"chart-container\" style=\"flex: 1; min-height: 0;\"></div><div id=\"stats-card-right\" style=\"padding: 4px; display: none;\"></div></div><div id=\"stats-card-bottom\" style=\"padding: 4px 8px; display: none;\"></div></div>",
+    "templateCss": "#widget-wrapper { position: relative; overflow: hidden; } #chart-container { position: relative; }",
+    "controllerScript": "/**\n * ECO Load Duration Curve Widget\n *\n * Displays load data as a duration curve with optional load profile.\n * Supports energy-to-power conversion, data smoothing, outlier removal, and configurable thresholds.\n */\n\nvar chart = null;\nvar chartContainer = null;\nvar statsCardContainers = {};\nvar resizeObserver = null;\n// Timewindow selector state\nvar twState = {\n    mode: 'day',  // 'day', 'week', 'month', 'custom'\n    currentDate: new Date()  // Reference date for navigation\n};\n\n// Cached settings for timewindow selector\nvar twSettings = {};\nvar timewindowSelectorContainer = null;\n\n\nself.onInit = function() {\n    chartContainer = self.ctx.$container.find('#chart-container')[0];\n    statsCardContainers = {\n        top: self.ctx.$container.find('#stats-card-top')[0],\n        bottom: self.ctx.$container.find('#stats-card-bottom')[0],\n        left: self.ctx.$container.find('#stats-card-left')[0],\n        right: self.ctx.$container.find('#stats-card-right')[0]\n    };\n    timewindowSelectorContainer = self.ctx.$container.find('#timewindow-selector')[0];\n\n\n    if (!chartContainer) {\n        console.error('ECO Load Duration Curve: Chart container not found');\n        return;\n    }\n\n    if (typeof echarts === 'undefined') {\n        console.error('ECO Load Duration Curve: ECharts library not loaded');\n        return;\n    }\n\n    chart = echarts.init(chartContainer);\n    updateChart();\n\n    // Multiple delayed resizes to handle ThingsBoard's async layout\n    // Container size may not be final until layout completes\n    // Use inline code to avoid any closure/scoping issues\n    [100, 250, 500, 1000].forEach(function(delay) {\n        setTimeout(function() {\n            if (chart && chartContainer) {\n                var w = chartContainer.offsetWidth;\n                var h = chartContainer.offsetHeight;\n                chart.resize({ width: w, height: h });\n            }\n        }, delay);\n    });\n\n    // ResizeObserver for dynamic container size changes\n    if (typeof ResizeObserver !== 'undefined') {\n        resizeObserver = new ResizeObserver(function() {\n            requestAnimationFrame(function() {\n                if (chart && chartContainer) {\n                    chart.resize({\n                        width: chartContainer.offsetWidth,\n                        height: chartContainer.offsetHeight\n                    });\n                }\n            });\n        });\n        resizeObserver.observe(chartContainer);\n    }\n};\n\nself.onDataUpdated = function() {\n    updateChart();\n};\n\nfunction updateChart() {\n    if (!chart) return;\n\n    var settings = self.ctx.settings || {};\n    // Timewindow selector settings\n    var showTimewindowSelector = settings.showTimewindowSelector === true;\n\n    // Cache timewindow selector settings for use in render function\n    twSettings = {\n        color: settings.twSelectorColor || '',\n        position: settings.twSelectorPosition || 'center',\n        dayFormat: settings.twSelectorDayFormat || 'D MMM YYYY',\n        weekFormat: settings.twSelectorWeekFormat || 'D-D MMM',\n        monthFormat: settings.twSelectorMonthFormat || 'MMM YYYY',\n        customStartTime: settings.twCustomStartTime || '',\n        customEndTime: settings.twCustomEndTime || '',\n        aggregationType: settings.twAggregationType || 'NONE',\n        maxDataPoints: settings.twMaxDataPoints || 100000\n    };\n\n    // Render timewindow selector if enabled\n    if (showTimewindowSelector && self.ctx.dashboard) {\n        renderTimewindowSelector();\n    } else if (timewindowSelectorContainer) {\n        timewindowSelectorContainer.style.display = 'none';\n    }\n\n\n    // Display settings\n    var showLoadProfile = settings.showLoadProfile === true;\n    var showDurationCurve = settings.showDurationCurve !== false;\n\n    // Data processing settings\n    var dataType = settings.dataType || 'power';\n    var energyToPower = settings.energyToPower === true;\n\n    // Outlier removal settings\n    var removeOutliers = settings.removeOutliers === true;\n    var outlierMethod = settings.outlierMethod || 'iqr';\n    var outlierIqrMultiplier = settings.outlierIqrMultiplier || 1.5;\n    var outlierZscoreThreshold = settings.outlierZscoreThreshold || 3;\n    var outlierMinValue = settings.outlierMinValue;\n    var outlierMaxValue = settings.outlierMaxValue;\n\n    // Smoothing settings\n    var smoothingEnabled = settings.smoothingEnabled === true;\n    var smoothingWindow = settings.smoothingWindow || 5;\n\n    // Threshold settings\n    var showThresholds = settings.showThresholds === true;\n    var autoDetectThresholds = settings.autoDetectThresholds !== false;\n    var baseLoadPercentile = settings.baseLoadPercentile !== undefined ? settings.baseLoadPercentile : 10;\n    var peakLoadPercentile = settings.peakLoadPercentile !== undefined ? settings.peakLoadPercentile : 90;\n    var manualBaseLoad = settings.manualBaseLoad;\n    var manualPeakLoad = settings.manualPeakLoad;\n    var baseLoadColor = settings.baseLoadColor || '#4CAF50';\n    var peakLoadColor = settings.peakLoadColor || '#F44336';\n\n    // Statistical lines\n    var showMean = settings.showMean === true;\n    var showMedian = settings.showMedian === true;\n    var meanColor = settings.meanColor || '#FF9800';\n    var medianColor = settings.medianColor || '#9C27B0';\n\n    // Axis settings\n    var yAxisMin = settings.yAxisMin;\n    var yAxisMax = settings.yAxisMax;\n    var yAxisLabel = settings.yAxisLabel || '';\n\n    // Chart appearance\n    var defaultSeriesColor = '#2196F3';\n    var showLegend = settings.showLegend !== false;\n    var showTooltip = settings.showTooltip !== false;\n\n    // Legend settings\n    var legendPosition = settings.legendPosition || 'bottom';\n    var legendStyle = settings.legendStyle || 'classic'; // 'classic' or 'card'\n    var legendAlign = settings.legendAlign || 'center'; // 'left', 'center', 'right'\n    var legendCardColorMode = settings.legendCardColorMode || 'auto'; // 'auto', 'manual', 'gradient'\n    var legendCardColor = settings.legendCardColor || '#2196F3';\n    var legendValues = settings.legendValues || ['current']; // Array: ['current', 'min', 'max', 'avg', 'median', 'sum', 'count']\n\n    // Timestamp settings\n    var showTimestamp = settings.showTimestamp !== false;\n    var timestampFormat = settings.timestampFormat || 'YYYY-MM-DD HH:mm:ss';\n\n    // Toolbox settings\n    var showToolbox = settings.showToolbox !== false;\n    var toolboxFeatures = settings.toolboxFeatures || ['saveAsImage', 'dataView', 'dataZoom', 'restore'];\n    var showSaveAsImage = toolboxFeatures.indexOf('saveAsImage') !== -1;\n    var showDataView = toolboxFeatures.indexOf('dataView') !== -1;\n    var showDataZoom = toolboxFeatures.indexOf('dataZoom') !== -1;\n    var showRestore = toolboxFeatures.indexOf('restore') !== -1;\n\n    // Get data from datasources\n    var data = self.ctx.data || [];\n    if (!data.length || !data[0].data || !data[0].data.length) {\n        showNoData('No data available');\n        return;\n    }\n\n    var seriesData = data[0].data;\n    var dataKey = data[0].dataKey || {};\n    var datasource = data[0].datasource || {};\n\n    // Determine display name: prefer label, then entityName, then key name\n    var label = dataKey.label || datasource.entityName || datasource.name || dataKey.name || 'Value';\n\n    // Use dataKey settings for units/decimals\n    var units = dataKey.units || self.ctx.units || '';\n    var decimals = dataKey.decimals !== undefined ? dataKey.decimals : 2;\n    var dataKeyColor = dataKey.color || null;\n\n    // Extract and process values\n    var rawValues = [];\n    var timestamps = [];\n\n    for (var i = 0; i < seriesData.length; i++) {\n        var ts = seriesData[i][0];\n        var val = seriesData[i][1];\n        if (val !== null && !isNaN(val)) {\n            timestamps.push(ts);\n            rawValues.push(val);\n        }\n    }\n\n    if (rawValues.length === 0) {\n        showNoData('No valid data points');\n        return;\n    }\n\n    // Energy to power conversion (kWh to kW)\n    var values = rawValues.slice();\n    if (energyToPower && dataType === 'energy' && timestamps.length > 1) {\n        values = convertEnergyToPower(rawValues, timestamps);\n        units = units.replace(/Wh/i, 'W').replace(/wh/i, 'w');\n        label = label + ' (Power)';\n    }\n\n    // Remove outliers BEFORE other processing\n    var outlierInfo = { removed: 0, method: 'none' };\n    if (removeOutliers) {\n        var result = removeOutliersFromData(values, timestamps, {\n            method: outlierMethod,\n            iqrMultiplier: outlierIqrMultiplier,\n            zscoreThreshold: outlierZscoreThreshold,\n            minValue: outlierMinValue,\n            maxValue: outlierMaxValue\n        });\n        values = result.values;\n        timestamps = result.timestamps;\n        outlierInfo = { removed: result.removed, method: outlierMethod };\n\n        if (values.length === 0) {\n            showNoData('All data points removed as outliers');\n            return;\n        }\n    }\n\n    // Apply smoothing if enabled\n    if (smoothingEnabled && smoothingWindow > 1) {\n        values = movingAverage(values, smoothingWindow);\n    }\n\n    // Calculate statistics\n    var stats = calculateStatistics(values);\n\n    // Add current value and last timestamp\n    if (values.length > 0 && timestamps.length > 0) {\n        stats.current = values[values.length - 1];\n        stats.lastTimestamp = timestamps[timestamps.length - 1];\n    }\n\n    // Calculate thresholds\n    // Base Load = low constant load (use low percentile, e.g. 10 = 10th percentile)\n    // Peak Load = high peak demand (use high percentile, e.g. 90 = 90th percentile)\n    var baseLoadValue, peakLoadValue;\n    if (showThresholds) {\n        var sortedAsc = values.slice().sort(function(a, b) { return a - b; });\n        if (autoDetectThresholds) {\n            // baseLoadPercentile = direct percentile position (e.g., 10 = 10th percentile = low value)\n            // peakLoadPercentile = direct percentile position (e.g., 90 = 90th percentile = high value)\n            baseLoadValue = percentile(sortedAsc, baseLoadPercentile);\n            peakLoadValue = percentile(sortedAsc, peakLoadPercentile);\n        } else {\n            baseLoadValue = manualBaseLoad;\n            peakLoadValue = manualPeakLoad;\n        }\n    }\n\n    // Prepare duration curve data (sorted descending)\n    var sortedValues = values.slice().sort(function(a, b) { return b - a; });\n    var durationData = [];\n    for (var j = 0; j < sortedValues.length; j++) {\n        var pct = sortedValues.length > 1 ? (j / (sortedValues.length - 1)) * 100 : 0;\n        durationData.push([Math.round(pct * 10) / 10, sortedValues[j]]);\n    }\n\n    // Prepare load profile data (time series)\n    var loadProfileData = [];\n    for (var k = 0; k < timestamps.length; k++) {\n        loadProfileData.push([timestamps[k], values[k]]);\n    }\n\n    // Determine series color: prefer dataKey color, then default\n    var seriesColor = dataKeyColor || defaultSeriesColor;\n\n    // Build ECharts option\n    var option = buildChartOption({\n        showLoadProfile: showLoadProfile,\n        showDurationCurve: showDurationCurve,\n        loadProfileData: loadProfileData,\n        durationData: durationData,\n        label: label,\n        units: units,\n        decimals: decimals,\n        seriesColor: seriesColor,\n        showLegend: showLegend,\n        showTooltip: showTooltip,\n        showThresholds: showThresholds,\n        baseLoadValue: baseLoadValue,\n        peakLoadValue: peakLoadValue,\n        baseLoadColor: baseLoadColor,\n        peakLoadColor: peakLoadColor,\n        showMean: showMean,\n        showMedian: showMedian,\n        meanValue: stats.mean,\n        medianValue: stats.median,\n        meanColor: meanColor,\n        medianColor: medianColor,\n        yAxisMin: yAxisMin,\n        yAxisMax: yAxisMax,\n        yAxisLabel: yAxisLabel || (label + (units ? ' (' + units + ')' : '')),\n        outlierInfo: outlierInfo,\n        // Legend settings\n        stats: stats,\n        legendPosition: legendPosition,\n        legendStyle: legendStyle,\n        legendValues: legendValues,\n        // Toolbox settings\n        showToolbox: showToolbox,\n        showSaveAsImage: showSaveAsImage,\n        showDataView: showDataView,\n        showDataZoom: showDataZoom,\n        showRestore: showRestore\n    });\n\n    chart.setOption(option, true);\n\n    // Render statistics card in DOM (outside ECharts)\n    renderStatsCard({\n        showLegend: showLegend,\n        legendStyle: legendStyle,\n        legendAlign: legendAlign,\n        legendCardColorMode: legendCardColorMode,\n        legendCardColor: legendCardColor,\n        legendValues: legendValues,\n        legendPosition: legendPosition,\n        showTimestamp: showTimestamp,\n        timestampFormat: timestampFormat,\n        stats: stats,\n        label: label,\n        units: units,\n        decimals: decimals,\n        seriesColor: seriesColor\n    });\n\n    // Resize chart after stats cards are rendered to fix container height\n    // Use multiple strategies to ensure resize happens after layout is complete\n    function doResize() {\n        if (chart && chartContainer) {\n            chart.resize({\n                width: chartContainer.offsetWidth,\n                height: chartContainer.offsetHeight\n            });\n        }\n    }\n\n    // Strategy 1: requestAnimationFrame for next paint\n    requestAnimationFrame(function() {\n        requestAnimationFrame(doResize);\n    });\n\n    // Strategy 2: setTimeout fallbacks at different intervals\n    setTimeout(doResize, 100);\n    setTimeout(doResize, 250);\n}\n\nfunction renderStatsCard(config) {\n    // Clear all containers first\n    ['top', 'bottom', 'left', 'right'].forEach(function(pos) {\n        var container = statsCardContainers[pos];\n        if (container) {\n            container.style.display = 'none';\n            while (container.firstChild) {\n                container.removeChild(container.firstChild);\n            }\n        }\n    });\n\n    var legendValues = config.legendValues || [];\n    var legendStyle = config.legendStyle || 'classic';\n    var showCard = config.showLegend && legendStyle === 'card' && legendValues.length > 0 && config.stats;\n\n    if (!showCard) return;\n\n    var position = config.legendPosition || 'bottom';\n    var align = config.legendAlign || 'center';\n    var container = statsCardContainers[position];\n    if (!container) return;\n\n    // Set container to flex for alignment\n    var isVertical = (position === 'left' || position === 'right');\n    var justifyMap = { left: 'flex-start', center: 'center', right: 'flex-end' };\n    var alignMap = { left: 'flex-start', center: 'center', right: 'flex-end' };\n\n    container.style.display = 'flex';\n    if (isVertical) {\n        container.style.flexDirection = 'column';\n        container.style.alignItems = alignMap[align];\n        container.style.justifyContent = 'flex-start';\n    } else {\n        container.style.flexDirection = 'row';\n        container.style.justifyContent = justifyMap[align];\n        container.style.alignItems = 'flex-start';\n    }\n\n    var stats = config.stats;\n    var unit = config.units || '';\n    var dec = config.decimals !== undefined ? config.decimals : 2;\n    var seriesColor = config.seriesColor || '#2196F3';\n    var colorMode = config.legendCardColorMode || 'auto';\n    var manualColor = config.legendCardColor || '#2196F3';\n\n    // Determine background color/style based on mode\n    var bgColor = colorMode === 'manual' ? manualColor : seriesColor;\n    var bgStyle;\n    if (colorMode === 'gradient') {\n        var gradientDir = isVertical ? '180deg' : '135deg';\n        bgStyle = 'linear-gradient(' + gradientDir + ', ' + bgColor + ' 0%, ' + adjustColor(bgColor, -40) + ' 100%)';\n    } else {\n        bgStyle = bgColor;\n    }\n\n    // Build the statistics card using DOM methods\n    var card = document.createElement('div');\n    card.style.cssText = 'background: ' + bgStyle + '; border-radius: 6px; padding: ' + (isVertical ? '10px 8px' : '8px 12px') + '; color: white; box-shadow: 0 2px 6px rgba(0,0,0,0.12); width: fit-content;';\n\n    var titleEl = document.createElement('div');\n    titleEl.style.cssText = 'font-size: ' + (isVertical ? '11px' : '12px') + '; font-weight: 600; margin-bottom: 8px; opacity: 0.95;' + (isVertical ? ' text-align: center;' : '');\n    titleEl.textContent = config.label + (unit ? ' (' + unit + ')' : '');\n    card.appendChild(titleEl);\n\n    var statsRow = document.createElement('div');\n    statsRow.style.cssText = 'display: flex; flex-wrap: wrap; gap: 6px;' + (isVertical ? ' flex-direction: column;' : '');\n\n    legendValues.forEach(function(val) {\n        var statValue, label, icon;\n        switch(val) {\n            case 'current': statValue = stats.current; label = 'Current'; icon = '\\u25CF'; break;\n            case 'min': statValue = stats.min; label = 'Min'; icon = '\\u2193'; break;\n            case 'max': statValue = stats.max; label = 'Max'; icon = '\\u2191'; break;\n            case 'avg': statValue = stats.mean; label = 'Avg'; icon = '\\u03BC'; break;\n            case 'mean': statValue = stats.mean; label = 'Mean'; icon = '\\u03BC'; break;\n            case 'median': statValue = stats.median; label = 'Median'; icon = '~'; break;\n            case 'sum': statValue = stats.sum; label = 'Sum'; icon = '\\u03A3'; break;\n            case 'count': statValue = stats.count; label = 'Count'; icon = 'n'; break;\n            default: return;\n        }\n        if (statValue !== undefined && statValue !== null) {\n            var formattedVal = val === 'count' ? String(statValue) : statValue.toFixed(dec);\n\n            var statBox = document.createElement('div');\n            statBox.style.cssText = 'background: rgba(255,255,255,0.18); border-radius: 4px; padding: ' + (isVertical ? '4px 6px' : '4px 8px') + ';' + (isVertical ? ' text-align: center;' : ' min-width: 60px;');\n\n            var labelEl = document.createElement('div');\n            labelEl.style.cssText = 'font-size: 9px; opacity: 0.85;';\n            labelEl.textContent = icon + ' ' + label;\n            statBox.appendChild(labelEl);\n\n            var valueEl = document.createElement('div');\n            valueEl.style.cssText = 'font-size: ' + (isVertical ? '12px' : '13px') + '; font-weight: 600;';\n            valueEl.textContent = formattedVal;\n            statBox.appendChild(valueEl);\n\n            statsRow.appendChild(statBox);\n        }\n    });\n\n    card.appendChild(statsRow);\n\n    // Timestamp display\n    if (config.showTimestamp && stats.lastTimestamp) {\n        var timestampEl = document.createElement('div');\n        timestampEl.style.cssText = 'font-size: 9px; opacity: 0.7; margin-top: 6px;' + (isVertical ? ' text-align: center;' : '');\n        timestampEl.textContent = formatTimestamp(stats.lastTimestamp, config.timestampFormat);\n        card.appendChild(timestampEl);\n    }\n\n    container.appendChild(card);\n}\n\n// Helper function to darken/lighten a hex color\nfunction adjustColor(color, amount) {\n    var usePound = false;\n    if (color[0] === '#') {\n        color = color.slice(1);\n        usePound = true;\n    }\n\n    var num = parseInt(color, 16);\n    var r = Math.min(255, Math.max(0, (num >> 16) + amount));\n    var g = Math.min(255, Math.max(0, ((num >> 8) & 0x00FF) + amount));\n    var b = Math.min(255, Math.max(0, (num & 0x0000FF) + amount));\n\n    return (usePound ? '#' : '') + (g | (b << 8) | (r << 16)).toString(16).padStart(6, '0');\n}\n\nfunction showNoData(message) {\n    if (!chart) return;\n    chart.setOption({\n        title: {\n            text: message,\n            left: 'center',\n            top: 'middle',\n            textStyle: { color: '#999', fontSize: 14 }\n        }\n    }, true);\n}\n\nfunction removeOutliersFromData(values, timestamps, options) {\n    var method = options.method || 'iqr';\n    var cleanValues = [];\n    var cleanTimestamps = [];\n    var removed = 0;\n\n    if (method === 'manual') {\n        var minVal = options.minValue !== undefined && options.minValue !== null ? options.minValue : -Infinity;\n        var maxVal = options.maxValue !== undefined && options.maxValue !== null ? options.maxValue : Infinity;\n\n        for (var i = 0; i < values.length; i++) {\n            if (values[i] >= minVal && values[i] <= maxVal) {\n                cleanValues.push(values[i]);\n                cleanTimestamps.push(timestamps[i]);\n            } else {\n                removed++;\n            }\n        }\n    } else if (method === 'zscore') {\n        var threshold = options.zscoreThreshold || 3;\n        var stats = calculateStatistics(values);\n        var stdDev = calculateStdDev(values, stats.mean);\n\n        if (stdDev === 0) {\n            return { values: values, timestamps: timestamps, removed: 0 };\n        }\n\n        for (var j = 0; j < values.length; j++) {\n            var zscore = Math.abs((values[j] - stats.mean) / stdDev);\n            if (zscore <= threshold) {\n                cleanValues.push(values[j]);\n                cleanTimestamps.push(timestamps[j]);\n            } else {\n                removed++;\n            }\n        }\n    } else {\n        var multiplier = options.iqrMultiplier || 1.5;\n        var sorted = values.slice().sort(function(a, b) { return a - b; });\n        var q1 = percentile(sorted, 25);\n        var q3 = percentile(sorted, 75);\n        var iqr = q3 - q1;\n\n        if (iqr === 0) {\n            var median = percentile(sorted, 50);\n            var range = Math.abs(median) * 0.5;\n            if (range === 0) range = 1;\n            var lowerBound = median - range;\n            var upperBound = median + range;\n\n            for (var m = 0; m < values.length; m++) {\n                if (values[m] >= lowerBound && values[m] <= upperBound) {\n                    cleanValues.push(values[m]);\n                    cleanTimestamps.push(timestamps[m]);\n                } else {\n                    removed++;\n                }\n            }\n        } else {\n            var lowerFence = q1 - (multiplier * iqr);\n            var upperFence = q3 + (multiplier * iqr);\n\n            for (var n = 0; n < values.length; n++) {\n                if (values[n] >= lowerFence && values[n] <= upperFence) {\n                    cleanValues.push(values[n]);\n                    cleanTimestamps.push(timestamps[n]);\n                } else {\n                    removed++;\n                }\n            }\n        }\n    }\n\n    return {\n        values: cleanValues,\n        timestamps: cleanTimestamps,\n        removed: removed\n    };\n}\n\nfunction calculateStdDev(values, mean) {\n    if (values.length === 0) return 0;\n    var sumSquares = 0;\n    for (var i = 0; i < values.length; i++) {\n        sumSquares += Math.pow(values[i] - mean, 2);\n    }\n    return Math.sqrt(sumSquares / values.length);\n}\n\nfunction convertEnergyToPower(energyValues, timestamps) {\n    var powerValues = [];\n    for (var i = 0; i < energyValues.length; i++) {\n        if (i === 0) {\n            powerValues.push(0);\n        } else {\n            var deltaEnergy = energyValues[i] - energyValues[i - 1];\n            var deltaTimeHours = (timestamps[i] - timestamps[i - 1]) / 3600000;\n            if (deltaTimeHours > 0) {\n                var power = deltaEnergy / deltaTimeHours;\n                powerValues.push(power);\n            } else {\n                powerValues.push(powerValues[i - 1] || 0);\n            }\n        }\n    }\n    if (powerValues.length > 1) {\n        powerValues[0] = powerValues[1];\n    }\n    return powerValues;\n}\n\nfunction movingAverage(values, windowSize) {\n    var result = [];\n    var halfWindow = Math.floor(windowSize / 2);\n\n    for (var i = 0; i < values.length; i++) {\n        var start = Math.max(0, i - halfWindow);\n        var end = Math.min(values.length, i + halfWindow + 1);\n        var sum = 0;\n        for (var j = start; j < end; j++) {\n            sum += values[j];\n        }\n        result.push(sum / (end - start));\n    }\n    return result;\n}\n\nfunction calculateStatistics(values) {\n    if (values.length === 0) {\n        return { mean: 0, median: 0, min: 0, max: 0, sum: 0, count: 0 };\n    }\n\n    var sorted = values.slice().sort(function(a, b) { return a - b; });\n    var sum = 0;\n    for (var i = 0; i < values.length; i++) {\n        sum += values[i];\n    }\n\n    return {\n        mean: sum / values.length,\n        median: percentile(sorted, 50),\n        min: sorted[0],\n        max: sorted[sorted.length - 1],\n        sum: sum,\n        count: values.length\n    };\n}\n\nfunction percentile(sortedValues, p) {\n    if (sortedValues.length === 0) return 0;\n    if (sortedValues.length === 1) return sortedValues[0];\n\n    var index = (p / 100) * (sortedValues.length - 1);\n    var lower = Math.floor(index);\n    var upper = Math.ceil(index);\n    var weight = index - lower;\n\n    if (upper >= sortedValues.length) return sortedValues[sortedValues.length - 1];\n    return sortedValues[lower] * (1 - weight) + sortedValues[upper] * weight;\n}\n\nfunction buildChartOption(config) {\n    var grids = [];\n    var xAxes = [];\n    var yAxes = [];\n    var series = [];\n    var titles = [];\n\n    var showBoth = config.showLoadProfile && config.showDurationCurve;\n\n    var subtitle = '';\n    if (config.outlierInfo && config.outlierInfo.removed > 0) {\n        subtitle = config.outlierInfo.removed + ' outliers removed (' + config.outlierInfo.method + ')';\n    }\n\n    if (showBoth) {\n        // Use percentage-based layout that doesn't overlap\n        // Top chart: from top to 48%, Bottom chart: from 52% to bottom\n        grids = [\n            { left: 60, right: 20, top: 40, bottom: '55%' },\n            { left: 60, right: 20, top: '55%', bottom: 45 }\n        ];\n\n        titles = [\n            {\n                text: 'Load Profile',\n                subtext: subtitle,\n                left: 'center',\n                top: 2,\n                textStyle: { fontSize: 12 },\n                subtextStyle: { fontSize: 9, color: '#999' }\n            },\n            { text: 'Duration Curve', left: 'center', top: '49%', textStyle: { fontSize: 12 } }\n        ];\n\n        xAxes.push({\n            type: 'time',\n            gridIndex: 0,\n            axisLabel: { fontSize: 10 },\n            splitLine: { show: false }\n        });\n\n        xAxes.push({\n            type: 'value',\n            gridIndex: 1,\n            name: '% of Time',\n            nameLocation: 'middle',\n            nameGap: 25,\n            min: 0,\n            max: 100,\n            axisLabel: { formatter: '{value}%', fontSize: 10 }\n        });\n\n        yAxes.push({\n            type: 'value',\n            gridIndex: 0,\n            name: config.yAxisLabel,\n            nameLocation: 'middle',\n            nameGap: 45,\n            min: config.yAxisMin,\n            max: config.yAxisMax,\n            axisLabel: { fontSize: 10 },\n            splitLine: { lineStyle: { type: 'dashed', opacity: 0.3 } }\n        });\n\n        yAxes.push({\n            type: 'value',\n            gridIndex: 1,\n            name: config.yAxisLabel,\n            nameLocation: 'middle',\n            nameGap: 45,\n            min: config.yAxisMin,\n            max: config.yAxisMax,\n            axisLabel: { fontSize: 10 },\n            splitLine: { lineStyle: { type: 'dashed', opacity: 0.3 } }\n        });\n\n        // Both charts use the same data source - use unified color and label\n        var seriesColor = config.seriesColor;\n\n        series.push({\n            name: config.label,\n            type: 'line',\n            xAxisIndex: 0,\n            yAxisIndex: 0,\n            data: config.loadProfileData,\n            smooth: false,\n            symbol: 'none',\n            lineStyle: { color: seriesColor, width: 1.5 },\n            areaStyle: { color: seriesColor, opacity: 0.1 },\n            markLine: buildLoadProfileMarkLines(config)\n        });\n\n        series.push({\n            name: config.label,\n            type: 'line',\n            xAxisIndex: 1,\n            yAxisIndex: 1,\n            data: config.durationData,\n            smooth: true,\n            symbol: 'none',\n            lineStyle: { color: seriesColor, width: 2 },\n            areaStyle: {\n                color: {\n                    type: 'linear',\n                    x: 0, y: 0, x2: 0, y2: 1,\n                    colorStops: [\n                        { offset: 0, color: seriesColor },\n                        { offset: 1, color: 'rgba(255,255,255,0.1)' }\n                    ]\n                }\n            },\n            markLine: buildDurationCurveMarkLines(config),\n            markArea: buildThresholdAreas(config)\n        });\n\n    } else if (config.showLoadProfile) {\n        grids = [{ left: 60, right: 20, top: 40, bottom: 45 }];\n        titles = [{\n            text: 'Load Profile - ' + config.label,\n            subtext: subtitle,\n            left: 'center',\n            textStyle: { fontSize: 14 },\n            subtextStyle: { fontSize: 10, color: '#999' }\n        }];\n\n        xAxes.push({\n            type: 'time',\n            axisLabel: { fontSize: 10 },\n            splitLine: { show: false }\n        });\n\n        yAxes.push({\n            type: 'value',\n            name: config.yAxisLabel,\n            nameLocation: 'middle',\n            nameGap: 45,\n            min: config.yAxisMin,\n            max: config.yAxisMax,\n            axisLabel: { fontSize: 10 },\n            splitLine: { lineStyle: { type: 'dashed', opacity: 0.3 } }\n        });\n\n        series.push({\n            name: config.label,\n            type: 'line',\n            data: config.loadProfileData,\n            smooth: false,\n            symbol: 'none',\n            lineStyle: { color: config.seriesColor, width: 1.5 },\n            areaStyle: { color: config.seriesColor, opacity: 0.1 },\n            markLine: buildLoadProfileMarkLines(config)\n        });\n\n    } else {\n        grids = [{ left: 60, right: 20, top: 40, bottom: 45 }];\n        titles = [{\n            text: 'Duration Curve - ' + config.label,\n            subtext: subtitle,\n            left: 'center',\n            textStyle: { fontSize: 13 },\n            subtextStyle: { fontSize: 9, color: '#999' }\n        }];\n\n        xAxes.push({\n            type: 'value',\n            name: '% of Time',\n            nameLocation: 'middle',\n            nameGap: 30,\n            min: 0,\n            max: 100,\n            axisLabel: { formatter: '{value}%' }\n        });\n\n        yAxes.push({\n            type: 'value',\n            name: config.yAxisLabel,\n            nameLocation: 'middle',\n            nameGap: 45,\n            min: config.yAxisMin,\n            max: config.yAxisMax,\n            axisLabel: { fontSize: 10 },\n            splitLine: { lineStyle: { type: 'dashed', opacity: 0.3 } }\n        });\n\n        series.push({\n            name: config.label,\n            type: 'line',\n            data: config.durationData,\n            smooth: true,\n            symbol: 'none',\n            lineStyle: { color: config.seriesColor, width: 2 },\n            areaStyle: {\n                color: {\n                    type: 'linear',\n                    x: 0, y: 0, x2: 0, y2: 1,\n                    colorStops: [\n                        { offset: 0, color: config.seriesColor },\n                        { offset: 1, color: 'rgba(255,255,255,0.1)' }\n                    ]\n                }\n            },\n            markLine: buildDurationCurveMarkLines(config),\n            markArea: buildThresholdAreas(config)\n        });\n    }\n\n    // Build legend - use DOM stats card when legendStyle='card', otherwise ECharts legend\n    var legendConfig = null;\n    var legendValues = config.legendValues || [];\n    var legendStyle = config.legendStyle || 'classic';\n    var useStatsCard = legendStyle === 'card' && legendValues.length > 0 && config.stats;\n\n    // Only show ECharts legend if showLegend is true AND using classic style\n    if (config.showLegend && !useStatsCard) {\n        var legendData = [config.label];\n        var position = config.legendPosition || 'bottom';\n        var decimals = config.decimals !== undefined ? config.decimals : 2;\n        var unit = config.units || '';\n\n        legendConfig = {\n            data: legendData,\n            textStyle: { fontSize: 11 }\n        };\n\n        // Add formatter with stats if legendValues are selected\n        if (legendValues.length > 0 && config.stats) {\n            legendConfig.formatter = function(name) {\n                var parts = [name];\n                legendValues.forEach(function(val) {\n                    var statValue, label;\n                    switch(val) {\n                        case 'min': statValue = config.stats.min; label = 'Min'; break;\n                        case 'max': statValue = config.stats.max; label = 'Max'; break;\n                        case 'avg': statValue = config.stats.mean; label = 'Avg'; break;\n                        case 'median': statValue = config.stats.median; label = 'Median'; break;\n                        case 'sum': statValue = config.stats.sum; label = 'Sum'; break;\n                        case 'count':\n                            parts.push('n=' + config.stats.count);\n                            return;\n                        default: return;\n                    }\n                    if (statValue !== undefined) {\n                        parts.push(label + ': ' + statValue.toFixed(decimals) + (unit ? ' ' + unit : ''));\n                    }\n                });\n                return parts.join('  |  ');\n            };\n        }\n\n        // Set position and orientation based on setting\n        switch (position) {\n            case 'top':\n                legendConfig.top = 5;\n                legendConfig.left = 'center';\n                legendConfig.orient = 'horizontal';\n                break;\n            case 'bottom':\n                legendConfig.bottom = 5;\n                legendConfig.left = 'center';\n                legendConfig.orient = 'horizontal';\n                break;\n            case 'left':\n                legendConfig.left = 5;\n                legendConfig.top = 'middle';\n                legendConfig.orient = 'vertical';\n                break;\n            case 'right':\n                legendConfig.right = 5;\n                legendConfig.top = 'middle';\n                legendConfig.orient = 'vertical';\n                break;\n            default:\n                legendConfig.bottom = 5;\n                legendConfig.left = 'center';\n                legendConfig.orient = 'horizontal';\n        }\n    }\n\n    // Adjust grid margins based on legend position (only for classic ECharts legend)\n    var legendMargin = (config.showLegend && !useStatsCard) ? 35 : 0;\n    var position = config.legendPosition || 'bottom';\n\n    // Recalculate grids with legend position consideration\n    if (showBoth) {\n        var topOffset = position === 'top' ? 40 + legendMargin : 40;\n        var bottomOffset = position === 'bottom' ? 45 + legendMargin : 45;\n        var leftOffset = position === 'left' ? 60 + legendMargin : 60;\n        var rightOffset = position === 'right' ? 20 + legendMargin : 20;\n\n        // Use bottom-based layout to prevent overlap\n        grids = [\n            { left: leftOffset, right: rightOffset, top: topOffset, bottom: '55%' },\n            { left: leftOffset, right: rightOffset, top: '55%', bottom: bottomOffset }\n        ];\n\n        // Adjust title positions\n        titles[0].top = topOffset - 38;\n        titles[1].top = '50%';\n    } else {\n        var topOffset = position === 'top' ? 40 + legendMargin : 40;\n        var bottomOffset = position === 'bottom' ? 45 + legendMargin : 45;\n        var leftOffset = position === 'left' ? 60 + legendMargin : 60;\n        var rightOffset = position === 'right' ? 20 + legendMargin : 20;\n\n        grids = [{ left: leftOffset, right: rightOffset, top: topOffset, bottom: bottomOffset }];\n    }\n\n    // Build toolbox\n    var toolboxConfig = null;\n    if (config.showToolbox) {\n        toolboxConfig = {\n            show: true,\n            right: 10,\n            top: 5,\n            feature: {}\n        };\n\n        if (config.showSaveAsImage) {\n            toolboxConfig.feature.saveAsImage = {\n                show: true,\n                title: 'Save as PNG',\n                pixelRatio: 2\n            };\n        }\n\n        if (config.showDataView) {\n            toolboxConfig.feature.dataView = {\n                show: true,\n                title: 'Data View',\n                readOnly: true,\n                lang: ['Data View', 'Close', 'Refresh'],\n                optionToContent: function(opt) {\n                    var series = opt.series || [];\n                    var unit = config.units || '';\n                    var dec = config.decimals !== undefined ? config.decimals : 2;\n                    var legendValues = config.legendValues || [];\n                    var stats = config.stats;\n                    var showLegend = config.showLegend && legendValues.length > 0 && stats;\n\n                    // Container with full height\n                    var html = '<div style=\"display: flex; flex-direction: column; height: 100%; font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif;\">';\n\n                    // Statistics Card (if legend enabled)\n                    if (showLegend) {\n                        html += '<div style=\"background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px; padding: 16px; margin: 12px; color: white; box-shadow: 0 4px 6px rgba(0,0,0,0.1);\">';\n                        html += '<div style=\"font-size: 14px; font-weight: 600; margin-bottom: 12px; opacity: 0.9;\">' + config.label + (unit ? ' (' + unit + ')' : '') + '</div>';\n                        html += '<div style=\"display: flex; flex-wrap: wrap; gap: 16px;\">';\n\n                        legendValues.forEach(function(val) {\n                            var statValue, label, icon;\n                            switch(val) {\n                                case 'min': statValue = stats.min; label = 'Min'; icon = '↓'; break;\n                                case 'max': statValue = stats.max; label = 'Max'; icon = '↑'; break;\n                                case 'avg': statValue = stats.mean; label = 'Avg'; icon = 'μ'; break;\n                                case 'median': statValue = stats.median; label = 'Median'; icon = '~'; break;\n                                case 'sum': statValue = stats.sum; label = 'Sum'; icon = 'Σ'; break;\n                                case 'count': statValue = stats.count; label = 'Count'; icon = 'n'; break;\n                                default: return;\n                            }\n                            if (statValue !== undefined) {\n                                var formattedVal = val === 'count' ? statValue : statValue.toFixed(dec);\n                                html += '<div style=\"background: rgba(255,255,255,0.15); border-radius: 6px; padding: 8px 12px; min-width: 80px;\">';\n                                html += '<div style=\"font-size: 11px; opacity: 0.8; margin-bottom: 2px;\">' + icon + ' ' + label + '</div>';\n                                html += '<div style=\"font-size: 16px; font-weight: 600;\">' + formattedVal + '</div>';\n                                html += '</div>';\n                            }\n                        });\n\n                        html += '</div></div>';\n                    }\n\n                    // Data tables container\n                    html += '<div style=\"flex: 1; overflow: hidden; display: flex; flex-direction: column; padding: 0 12px 12px 12px;\">';\n\n                    for (var i = 0; i < series.length; i++) {\n                        var s = series[i];\n                        var data = s.data || [];\n                        if (data.length === 0) continue;\n\n                        // Check if first value is timestamp (> year 2000 in ms)\n                        var isTimeSeries = data[0] && data[0][0] > 946684800000;\n                        var tableTitle = isTimeSeries ? 'Load Profile' : 'Duration Curve';\n\n                        html += '<div style=\"font-size: 13px; font-weight: 600; color: #374151; margin: 8px 0 6px 0;\">' + tableTitle + ' <span style=\"font-weight: 400; color: #6b7280;\">(' + data.length + ' points)</span></div>';\n\n                        // Table wrapper with scroll\n                        html += '<div style=\"flex: 1; overflow: auto; border: 1px solid #e5e7eb; border-radius: 6px; min-height: 150px;\">';\n                        html += '<table style=\"width: 100%; border-collapse: collapse; font-size: 12px;\">';\n\n                        // Fixed header\n                        html += '<thead style=\"position: sticky; top: 0; z-index: 1;\">';\n                        html += '<tr style=\"background: #f9fafb;\">';\n                        if (isTimeSeries) {\n                            html += '<th style=\"border-bottom: 2px solid #e5e7eb; padding: 8px 12px; text-align: left; font-weight: 600; color: #374151; white-space: nowrap;\">Timestamp</th>';\n                        } else {\n                            html += '<th style=\"border-bottom: 2px solid #e5e7eb; padding: 8px 12px; text-align: center; font-weight: 600; color: #374151; width: 80px;\">%</th>';\n                        }\n                        html += '<th style=\"border-bottom: 2px solid #e5e7eb; padding: 8px 12px; text-align: right; font-weight: 600; color: #374151;\">' + (unit || 'Value') + '</th>';\n                        html += '</tr></thead>';\n\n                        html += '<tbody>';\n                        for (var j = 0; j < data.length; j++) {\n                            var row = data[j];\n                            var xVal = row[0];\n                            var yVal = row[1];\n                            var rowBg = j % 2 === 0 ? '#ffffff' : '#f9fafb';\n\n                            html += '<tr style=\"background: ' + rowBg + ';\">';\n                            if (isTimeSeries) {\n                                var d = new Date(xVal);\n                                var ts = d.getFullYear() + '-' +\n                                    String(d.getMonth() + 1).padStart(2, '0') + '-' +\n                                    String(d.getDate()).padStart(2, '0') + ' ' +\n                                    String(d.getHours()).padStart(2, '0') + ':' +\n                                    String(d.getMinutes()).padStart(2, '0') + ':' +\n                                    String(d.getSeconds()).padStart(2, '0');\n                                html += '<td style=\"padding: 6px 12px; color: #6b7280; font-family: monospace; font-size: 11px; white-space: nowrap;\">' + ts + '</td>';\n                            } else {\n                                html += '<td style=\"padding: 6px 12px; text-align: center; color: #6b7280;\">' + xVal.toFixed(1) + '</td>';\n                            }\n                            html += '<td style=\"padding: 6px 12px; text-align: right; font-weight: 500; color: #111827;\">' + yVal.toFixed(dec) + '</td>';\n                            html += '</tr>';\n                        }\n                        html += '</tbody></table></div>';\n                    }\n\n                    html += '</div></div>';\n                    return html;\n                }\n            };\n        }\n\n        if (config.showDataZoom) {\n            toolboxConfig.feature.dataZoom = {\n                show: true,\n                title: { zoom: 'Zoom', back: 'Reset Zoom' }\n            };\n        }\n\n        if (config.showRestore) {\n            toolboxConfig.feature.restore = {\n                show: true,\n                title: 'Restore'\n            };\n        }\n    }\n\n    return {\n        title: titles,\n        toolbox: toolboxConfig,\n        tooltip: config.showTooltip ? {\n            trigger: 'axis',\n            formatter: function(params) {\n                if (!params || !params.length) return '';\n                var p = params[0];\n                var dec = config.decimals !== undefined ? config.decimals : 2;\n                // Check if this is a time-based axis (Load Profile) or value axis (Duration Curve)\n                var isTimeAxis = p.axisType === 'xAxis.time' || (typeof p.value[0] === 'number' && p.value[0] > 1000000000000);\n                if (isTimeAxis) {\n                    var d = new Date(p.value[0]);\n                    return d.toLocaleString() + '<br/>' +\n                           p.seriesName + ': ' + formatValueWithDecimals(p.value[1], dec) + ' ' + config.units;\n                } else {\n                    return p.value[0].toFixed(1) + '% of time<br/>' +\n                           p.seriesName + ': ' + formatValueWithDecimals(p.value[1], dec) + ' ' + config.units;\n                }\n            }\n        } : null,\n        legend: legendConfig,\n        grid: grids,\n        xAxis: xAxes,\n        yAxis: yAxes,\n        dataZoom: [\n            { type: 'inside', xAxisIndex: showBoth ? [0, 1] : [0] }\n        ],\n        series: series\n    };\n}\n\nfunction buildLoadProfileMarkLines(config) {\n    var markLineData = [];\n\n    if (config.showMean && config.meanValue !== undefined) {\n        markLineData.push({\n            yAxis: config.meanValue,\n            lineStyle: { color: config.meanColor, type: 'dashed', width: 2 },\n            label: {\n                formatter: 'Mean: ' + formatValue(config.meanValue),\n                position: 'insideEndTop',\n                color: config.meanColor\n            }\n        });\n    }\n\n    if (config.showMedian && config.medianValue !== undefined) {\n        markLineData.push({\n            yAxis: config.medianValue,\n            lineStyle: { color: config.medianColor, type: 'dotted', width: 2 },\n            label: {\n                formatter: 'Median: ' + formatValue(config.medianValue),\n                position: 'insideEndBottom',\n                color: config.medianColor\n            }\n        });\n    }\n\n    if (markLineData.length === 0) return null;\n\n    return {\n        silent: true,\n        data: markLineData\n    };\n}\n\nfunction buildDurationCurveMarkLines(config) {\n    if (!config.showThresholds) return null;\n\n    var markLineData = [];\n\n    if (config.baseLoadValue !== undefined && config.baseLoadValue !== null) {\n        markLineData.push({\n            yAxis: config.baseLoadValue,\n            lineStyle: { color: config.baseLoadColor, type: 'dashed', width: 2 },\n            label: {\n                formatter: 'Base Load: ' + formatValue(config.baseLoadValue),\n                position: 'insideEndTop',\n                color: config.baseLoadColor\n            }\n        });\n    }\n\n    if (config.peakLoadValue !== undefined && config.peakLoadValue !== null) {\n        markLineData.push({\n            yAxis: config.peakLoadValue,\n            lineStyle: { color: config.peakLoadColor, type: 'dashed', width: 2 },\n            label: {\n                formatter: 'Peak Load: ' + formatValue(config.peakLoadValue),\n                position: 'insideEndBottom',\n                color: config.peakLoadColor\n            }\n        });\n    }\n\n    if (markLineData.length === 0) return null;\n\n    return {\n        silent: true,\n        data: markLineData\n    };\n}\n\nfunction buildThresholdAreas(config) {\n    if (!config.showThresholds) return null;\n\n    var areaData = [];\n\n    if (config.baseLoadValue !== undefined && config.baseLoadValue !== null) {\n        areaData.push([\n            { yAxis: 0, itemStyle: { color: config.baseLoadColor, opacity: 0.05 } },\n            { yAxis: config.baseLoadValue }\n        ]);\n    }\n\n    if (config.peakLoadValue !== undefined && config.peakLoadValue !== null) {\n        areaData.push([\n            { yAxis: config.peakLoadValue, itemStyle: { color: config.peakLoadColor, opacity: 0.05 } },\n            { yAxis: 'max' }\n        ]);\n    }\n\n    if (areaData.length === 0) return null;\n\n    return {\n        silent: true,\n        data: areaData\n    };\n}\n\nfunction formatValue(value) {\n    if (value === null || value === undefined) return '-';\n    if (Math.abs(value) >= 1000) {\n        return value.toFixed(0);\n    } else if (Math.abs(value) >= 100) {\n        return value.toFixed(1);\n    } else {\n        return value.toFixed(2);\n    }\n}\n\nfunction formatValueWithDecimals(value, decimals) {\n    if (value === null || value === undefined) return '-';\n    if (decimals === undefined || decimals === null) {\n        return formatValue(value);\n    }\n    return value.toFixed(decimals);\n}\n\nfunction formatTimestamp(ts, format) {\n    var d = new Date(ts);\n    var year = d.getFullYear();\n    var month = String(d.getMonth() + 1).padStart(2, '0');\n    var day = String(d.getDate()).padStart(2, '0');\n    var hours = String(d.getHours()).padStart(2, '0');\n    var minutes = String(d.getMinutes()).padStart(2, '0');\n    var seconds = String(d.getSeconds()).padStart(2, '0');\n\n    // Simple format replacement\n    var result = format\n        .replace('YYYY', year)\n        .replace('MM', month)\n        .replace('DD', day)\n        .replace('HH', hours)\n        .replace('mm', minutes)\n        .replace('ss', seconds);\n\n    return result;\n}\n\n\n// ========================================\n// Timewindow Selector Functions\n// ========================================\n\nfunction renderTimewindowSelector() {\n    if (!timewindowSelectorContainer) return;\n\n    while (timewindowSelectorContainer.firstChild) {\n        timewindowSelectorContainer.removeChild(timewindowSelectorContainer.firstChild);\n    }\n\n    var positionMap = { left: 'flex-start', center: 'center', right: 'flex-end' };\n    var position = twSettings.position || 'center';\n\n    timewindowSelectorContainer.style.display = 'flex';\n    timewindowSelectorContainer.style.alignItems = 'center';\n    timewindowSelectorContainer.style.justifyContent = positionMap[position] || 'center';\n    timewindowSelectorContainer.style.gap = '8px';\n    timewindowSelectorContainer.style.padding = '8px';\n\n    var accentColor = '#2196F3';\n    if (twSettings.color && twSettings.color !== '') {\n        accentColor = twSettings.color;\n    } else if (self.ctx.data && self.ctx.data[0] && self.ctx.data[0].dataKey && self.ctx.data[0].dataKey.color) {\n        accentColor = self.ctx.data[0].dataKey.color;\n    }\n\n    var wrapper = document.createElement('div');\n    wrapper.style.cssText = 'display: flex; align-items: center; gap: 6px; background: ' + accentColor + '; border-radius: 6px; padding: 6px 10px; box-shadow: 0 2px 6px rgba(0,0,0,0.12);';\n\n    var hasCustomRange = twSettings.customStartTime || twSettings.customEndTime;\n\n    if (twState.mode !== 'custom') {\n        var prevBtn = createNavButton('◀', accentColor, function() { navigateTimewindow(-1); });\n        wrapper.appendChild(prevBtn);\n    }\n\n    var periodBtns = document.createElement('div');\n    periodBtns.style.cssText = 'display: flex; gap: 4px;';\n\n    ['day', 'week', 'month'].forEach(function(mode) {\n        var btn = createPeriodButton(mode, accentColor);\n        periodBtns.appendChild(btn);\n    });\n\n    if (hasCustomRange) {\n        var customBtn = createPeriodButton('custom', accentColor);\n        periodBtns.appendChild(customBtn);\n    }\n\n    wrapper.appendChild(periodBtns);\n\n    if (twState.mode !== 'custom') {\n        var nextBtn = createNavButton('▶', accentColor, function() { navigateTimewindow(1); });\n        wrapper.appendChild(nextBtn);\n    }\n\n    var periodLabel = document.createElement('span');\n    periodLabel.id = 'tw-period-label';\n    periodLabel.style.cssText = 'color: white; font-size: 11px; margin-left: 8px; opacity: 0.9;';\n    periodLabel.textContent = formatPeriodLabel(twState.mode, twState.currentDate);\n    wrapper.appendChild(periodLabel);\n\n    timewindowSelectorContainer.appendChild(wrapper);\n}\n\nfunction createNavButton(symbol, accentColor, onClick) {\n    var btn = document.createElement('button');\n    btn.textContent = symbol;\n    btn.style.cssText = 'background: rgba(255,255,255,0.2); border: none; color: white; width: 24px; height: 24px; border-radius: 4px; cursor: pointer; font-size: 10px; display: flex; align-items: center; justify-content: center; transition: background 0.2s;';\n    btn.onmouseover = function() { btn.style.background = 'rgba(255,255,255,0.35)'; };\n    btn.onmouseout = function() { btn.style.background = 'rgba(255,255,255,0.2)'; };\n    btn.onclick = onClick;\n    return btn;\n}\n\nfunction createPeriodButton(mode, accentColor) {\n    var labels = { day: 'D', week: 'W', month: 'M', custom: 'C' };\n    var titles = { day: 'Day', week: 'Week', month: 'Month', custom: 'Custom Range' };\n\n    var btn = document.createElement('button');\n    btn.textContent = labels[mode];\n    btn.title = titles[mode];\n    btn.setAttribute('data-mode', mode);\n\n    var isActive = twState.mode === mode;\n    var baseStyle = 'border: none; width: 28px; height: 24px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600; transition: all 0.2s;';\n    var activeStyle = 'background: white; color: ' + accentColor + ';';\n    var inactiveStyle = 'background: rgba(255,255,255,0.2); color: white;';\n\n    btn.style.cssText = baseStyle + (isActive ? activeStyle : inactiveStyle);\n\n    btn.onmouseover = function() { if (twState.mode !== mode) { btn.style.background = 'rgba(255,255,255,0.35)'; } };\n    btn.onmouseout = function() { if (twState.mode !== mode) { btn.style.background = 'rgba(255,255,255,0.2)'; } };\n    btn.onclick = function() { selectPeriodMode(mode); };\n\n    return btn;\n}\n\nfunction selectPeriodMode(mode) {\n    twState.mode = mode;\n    if (mode !== 'custom') {\n        twState.currentDate = new Date();\n    }\n    applyTimewindow();\n    renderTimewindowSelector();\n}\n\nfunction navigateTimewindow(direction) {\n    var d = new Date(twState.currentDate);\n\n    switch (twState.mode) {\n        case 'day': d.setDate(d.getDate() + direction); break;\n        case 'week': d.setDate(d.getDate() + (direction * 7)); break;\n        case 'month': d.setMonth(d.getMonth() + direction); break;\n    }\n\n    twState.currentDate = d;\n    applyTimewindow();\n    updatePeriodLabel();\n}\n\nfunction applyTimewindow() {\n    var range;\n\n    if (twState.mode === 'custom') {\n        range = calculateCustomTimeRange();\n    } else {\n        range = calculateTimeRange(twState.mode, twState.currentDate);\n    }\n\n    if (!range) return;\n\n    var timewindow = {\n        history: {\n            fixedTimewindow: { startTimeMs: range.start, endTimeMs: range.end },\n            historyType: 0\n        },\n        aggregation: {\n            type: twSettings.aggregationType || 'NONE',\n            limit: twSettings.maxDataPoints || 100000\n        }\n    };\n\n    var useDashboardTimewindow = self.ctx.widget.config.useDashboardTimewindow;\n\n    if (useDashboardTimewindow !== false) {\n        if (self.ctx.dashboard && self.ctx.dashboard.updateDashboardTimewindow) {\n            self.ctx.dashboard.updateDashboardTimewindow(timewindow);\n        } else if (self.ctx.dashboard && self.ctx.dashboard.onUpdateTimewindow) {\n            self.ctx.dashboard.onUpdateTimewindow(range.start, range.end);\n        }\n    } else {\n        if (self.ctx.timewindowFunctions && self.ctx.timewindowFunctions.onUpdateTimewindow) {\n            self.ctx.timewindowFunctions.onUpdateTimewindow(range.start, range.end);\n        }\n    }\n}\n\nfunction calculateCustomTimeRange() {\n    var startStr = twSettings.customStartTime || '';\n    var endStr = twSettings.customEndTime || '';\n\n    var startMs = resolveTimeValue(startStr);\n    var endMs = resolveTimeValue(endStr);\n\n    if (startMs === null) {\n        var now = new Date();\n        startMs = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime();\n    }\n    if (endMs === null) {\n        var now2 = new Date();\n        endMs = new Date(now2.getFullYear(), now2.getMonth(), now2.getDate(), 23, 59, 59, 999).getTime();\n    }\n\n    return { start: startMs, end: endMs };\n}\n\nfunction resolveTimeValue(valueStr) {\n    if (!valueStr || valueStr === '') return null;\n\n    var varMatch = valueStr.match(/^\\$\\{(.+)\\}$/);\n    if (varMatch) {\n        var attrName = varMatch[1];\n        return resolveEntityAttribute(attrName);\n    }\n\n    var numVal = Number(valueStr);\n    if (!isNaN(numVal) && numVal > 0) return numVal;\n\n    var dateVal = Date.parse(valueStr);\n    if (!isNaN(dateVal)) return dateVal;\n\n    return null;\n}\n\nfunction resolveEntityAttribute(attrName) {\n    if (self.ctx.datasources && self.ctx.datasources.length > 0) {\n        var ds = self.ctx.datasources[0];\n        if (ds.entity) {\n            if (ds.entity.attributes && ds.entity.attributes[attrName] !== undefined) {\n                return Number(ds.entity.attributes[attrName]);\n            }\n            if (ds.entity.sharedAttributes && ds.entity.sharedAttributes[attrName] !== undefined) {\n                return Number(ds.entity.sharedAttributes[attrName]);\n            }\n        }\n        if (self.ctx.latestData) {\n            for (var i = 0; i < self.ctx.latestData.length; i++) {\n                var ld = self.ctx.latestData[i];\n                if (ld.dataKey && ld.dataKey.name === attrName && ld.data && ld.data.length > 0) {\n                    return Number(ld.data[ld.data.length - 1][1]);\n                }\n            }\n        }\n    }\n    return null;\n}\n\nfunction calculateTimeRange(mode, referenceDate) {\n    var start, end;\n    var d = new Date(referenceDate);\n\n    switch (mode) {\n        case 'day':\n            start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);\n            end = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);\n            break;\n        case 'week':\n            var dayOfWeek = d.getDay();\n            var diffToMonday = (dayOfWeek === 0 ? -6 : 1) - dayOfWeek;\n            var monday = new Date(d);\n            monday.setDate(d.getDate() + diffToMonday);\n            start = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate(), 0, 0, 0, 0);\n            var sunday = new Date(monday);\n            sunday.setDate(monday.getDate() + 6);\n            end = new Date(sunday.getFullYear(), sunday.getMonth(), sunday.getDate(), 23, 59, 59, 999);\n            break;\n        case 'month':\n            start = new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);\n            end = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);\n            break;\n    }\n\n    return { start: start.getTime(), end: end.getTime() };\n}\n\nfunction formatPeriodLabel(mode, date) {\n    var d = new Date(date);\n\n    switch (mode) {\n        case 'day':\n            return formatDateString(d, twSettings.dayFormat || 'D MMM YYYY');\n        case 'week':\n            var range = calculateTimeRange('week', d);\n            var startD = new Date(range.start);\n            var endD = new Date(range.end);\n            if (startD.getMonth() === endD.getMonth()) {\n                return startD.getDate() + '-' + endD.getDate() + ' ' + getMonthShort(startD.getMonth());\n            } else {\n                return startD.getDate() + ' ' + getMonthShort(startD.getMonth()) + ' - ' + endD.getDate() + ' ' + getMonthShort(endD.getMonth());\n            }\n        case 'month':\n            return formatDateString(d, twSettings.monthFormat || 'MMM YYYY');\n        case 'custom':\n            var customRange = calculateCustomTimeRange();\n            if (customRange) {\n                var startDate = new Date(customRange.start);\n                var endDate = new Date(customRange.end);\n                return formatDateString(startDate, 'DD.MM.YY') + ' - ' + formatDateString(endDate, 'DD.MM.YY');\n            }\n            return 'Custom';\n    }\n\n    return '';\n}\n\nfunction formatDateString(date, format) {\n    var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];\n    var d = new Date(date);\n\n    return format\n        .replace('YYYY', d.getFullYear())\n        .replace('YY', String(d.getFullYear()).slice(-2))\n        .replace('MMM', months[d.getMonth()])\n        .replace('MM', String(d.getMonth() + 1).padStart(2, '0'))\n        .replace('DD', String(d.getDate()).padStart(2, '0'))\n        .replace('D', d.getDate());\n}\n\nfunction getMonthShort(monthIndex) {\n    var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];\n    return months[monthIndex];\n}\n\nfunction updatePeriodLabel() {\n    var labelEl = document.getElementById('tw-period-label');\n    if (labelEl) {\n        labelEl.textContent = formatPeriodLabel(twState.mode, twState.currentDate);\n    }\n}\n\n// ========================================\n// End Timewindow Selector Functions\n// ========================================\n\n\nself.onResize = function() {\n    if (chart && chartContainer) {\n        // Use explicit dimensions for reliable resize\n        chart.resize({\n            width: chartContainer.offsetWidth,\n            height: chartContainer.offsetHeight\n        });\n    }\n};\n\nself.onDestroy = function() {\n    if (resizeObserver) {\n        resizeObserver.disconnect();\n        resizeObserver = null;\n    }\n    if (chart) {\n        chart.dispose();\n        chart = null;\n    }\n};\n\nself.typeParameters = function() {\n    return {\n        previewWidth: '100%',\n        embedTitlePanel: false,\n        hasDataExportAction: true,\n        dataKeySettingsFunction: function() { return {}; },\n        defaultDataKeysFunction: function() {\n            return [{\n                name: 'power',\n                label: 'Power',\n                type: 'timeseries',\n                units: 'kW',\n                decimals: 2\n            }];\n        }\n    };\n};\n",
     "settingsSchema": {
       "schema": {
         "type": "object",
-        "title": "Load Duration Curve Settings",
+        "title": "Duration Curve Settings",
         "properties": {
-          "displayMode": {
-            "title": "Display Mode",
+          "showDurationCurve": {
+            "title": "Show Duration Curve",
+            "type": "boolean",
+            "default": true
+          },
+          "showLoadProfile": {
+            "title": "Show Load Profile",
+            "type": "boolean",
+            "default": false
+          },
+          "showLegend": {
+            "title": "Show Legend",
+            "type": "boolean",
+            "default": true
+          },
+          "legendPosition": {
+            "title": "Legend Position",
             "type": "string",
-            "default": "durationCurveOnly",
-            "enum": ["durationCurveOnly", "splitView"]
+            "default": "bottom",
+            "enum": [
+              "top",
+              "bottom",
+              "left",
+              "right"
+            ]
+          },
+          "showTooltip": {
+            "title": "Show Tooltip",
+            "type": "boolean",
+            "default": true
+          },
+          "legendStyle": {
+            "title": "Legend Style",
+            "type": "string",
+            "default": "classic",
+            "enum": [
+              "classic",
+              "card"
+            ]
+          },
+          "legendAlign": {
+            "title": "Legend Alignment",
+            "type": "string",
+            "default": "center",
+            "enum": [
+              "left",
+              "center",
+              "right"
+            ]
+          },
+          "legendCardColorMode": {
+            "title": "Card Color Mode",
+            "type": "string",
+            "default": "auto",
+            "enum": [
+              "auto",
+              "manual",
+              "gradient"
+            ]
+          },
+          "legendCardColor": {
+            "title": "Card Color",
+            "type": "string",
+            "default": "#2196F3"
+          },
+          "legendValues": {
+            "title": "Legend Values",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "current",
+                "min",
+                "max",
+                "avg",
+                "mean",
+                "median",
+                "sum",
+                "count"
+              ]
+            },
+            "default": [
+              "current"
+            ]
+          },
+          "dataType": {
+            "title": "Data Type",
+            "type": "string",
+            "default": "power",
+            "enum": [
+              "power",
+              "energy"
+            ]
+          },
+          "energyToPower": {
+            "title": "Convert Energy to Power (kWh to kW)",
+            "type": "boolean",
+            "default": false
+          },
+          "removeOutliers": {
+            "title": "Remove Outliers",
+            "type": "boolean",
+            "default": false
+          },
+          "outlierMethod": {
+            "title": "Outlier Method",
+            "type": "string",
+            "default": "iqr",
+            "enum": [
+              "iqr",
+              "zscore",
+              "manual"
+            ]
+          },
+          "outlierIqrMultiplier": {
+            "title": "IQR Multiplier",
+            "type": "number",
+            "default": 1.5
+          },
+          "outlierZscoreThreshold": {
+            "title": "Z-Score Threshold",
+            "type": "number",
+            "default": 3
+          },
+          "outlierMinValue": {
+            "title": "Minimum Value (manual)",
+            "type": "number"
+          },
+          "outlierMaxValue": {
+            "title": "Maximum Value (manual)",
+            "type": "number"
+          },
+          "smoothingEnabled": {
+            "title": "Enable Smoothing",
+            "type": "boolean",
+            "default": false
+          },
+          "smoothingWindow": {
+            "title": "Smoothing Window (Minutes)",
+            "type": "integer",
+            "default": 5,
+            "minimum": 3,
+            "maximum": 50
+          },
+          "showThresholds": {
+            "title": "Show Thresholds",
+            "type": "boolean",
+            "default": false
           },
           "autoDetectThresholds": {
             "title": "Auto-detect Thresholds",
@@ -34,27 +177,25 @@
           },
           "baseLoadPercentile": {
             "title": "Base Load Percentile",
-            "type": "number",
+            "type": "integer",
             "default": 10,
             "minimum": 1,
             "maximum": 50
           },
           "peakLoadPercentile": {
             "title": "Peak Load Percentile",
-            "type": "number",
-            "default": 95,
+            "type": "integer",
+            "default": 90,
             "minimum": 50,
             "maximum": 99
           },
           "manualBaseLoad": {
-            "title": "Manual Base Load Value",
-            "type": "number",
-            "default": null
+            "title": "Manual Base Load",
+            "type": "number"
           },
           "manualPeakLoad": {
-            "title": "Manual Peak Load Value",
-            "type": "number",
-            "default": null
+            "title": "Manual Peak Load",
+            "type": "number"
           },
           "baseLoadColor": {
             "title": "Base Load Color",
@@ -66,65 +207,545 @@
             "type": "string",
             "default": "#F44336"
           },
-          "showThresholdLabels": {
-            "title": "Show Threshold Labels",
+          "showMean": {
+            "title": "Show Mean Line",
+            "type": "boolean",
+            "default": false
+          },
+          "showMedian": {
+            "title": "Show Median Line",
+            "type": "boolean",
+            "default": false
+          },
+          "meanColor": {
+            "title": "Mean Color",
+            "type": "string",
+            "default": "#FF9800"
+          },
+          "medianColor": {
+            "title": "Median Color",
+            "type": "string",
+            "default": "#9C27B0"
+          },
+          "yAxisLabel": {
+            "title": "Y-Axis Label",
+            "type": "string",
+            "default": ""
+          },
+          "yAxisMin": {
+            "title": "Y-Axis Minimum",
+            "type": "number"
+          },
+          "yAxisMax": {
+            "title": "Y-Axis Maximum",
+            "type": "number"
+          },
+          "showToolbox": {
+            "title": "Show Toolbox",
             "type": "boolean",
             "default": true
           },
-          "enableExport": {
-            "title": "Enable Export (PNG/Data)",
+          "toolboxFeatures": {
+            "title": "Toolbox Features",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "saveAsImage",
+                "dataView",
+                "dataZoom",
+                "restore"
+              ]
+            },
+            "default": [
+              "saveAsImage",
+              "dataView",
+              "dataZoom",
+              "restore"
+            ]
+          },
+          "showTimestamp": {
+            "title": "Show Timestamp",
             "type": "boolean",
             "default": true
+          },
+          "timestampFormat": {
+            "title": "Timestamp Format",
+            "type": "string",
+            "default": "YYYY-MM-DD HH:mm:ss"
+          },
+          "showTimewindowSelector": {
+            "title": "Show Timewindow Selector",
+            "type": "boolean",
+            "default": false
+          },
+          "twSelectorColor": {
+            "title": "Selector Color",
+            "type": "string",
+            "default": ""
+          },
+          "twSelectorPosition": {
+            "title": "Selector Position",
+            "type": "string",
+            "default": "center",
+            "enum": [
+              "left",
+              "center",
+              "right"
+            ]
+          },
+          "twSelectorDayFormat": {
+            "title": "Day Format",
+            "type": "string",
+            "default": "D MMM YYYY"
+          },
+          "twSelectorWeekFormat": {
+            "title": "Week Format",
+            "type": "string",
+            "default": "D-D MMM"
+          },
+          "twSelectorMonthFormat": {
+            "title": "Month Format",
+            "type": "string",
+            "default": "MMM YYYY"
+          },
+          "twCustomStartTime": {
+            "title": "Custom Start Time",
+            "type": "string",
+            "default": ""
+          },
+          "twCustomEndTime": {
+            "title": "Custom End Time",
+            "type": "string",
+            "default": ""
+          },
+          "twAggregationType": {
+            "title": "Aggregation",
+            "type": "string",
+            "default": "NONE",
+            "enum": [
+              "NONE",
+              "AVG",
+              "MIN",
+              "MAX",
+              "SUM",
+              "COUNT"
+            ]
+          },
+          "twMaxDataPoints": {
+            "title": "Max Data Points",
+            "type": "number",
+            "default": 100000
           }
         },
         "required": []
       },
       "form": [
+        [
+          "showDurationCurve",
+          "showLoadProfile",
+          {
+            "key": "dataType",
+            "type": "rc-select",
+            "multiple": false,
+            "items": [
+              {
+                "value": "power",
+                "label": "Power (kW)"
+              },
+              {
+                "value": "energy",
+                "label": "Energy (kWh)"
+              }
+            ]
+          },
+          {
+            "key": "energyToPower",
+            "condition": "model.dataType === 'energy'"
+          },
+          "showThresholds",
+          {
+            "key": "autoDetectThresholds",
+            "condition": "model.showThresholds === true"
+          },
+          {
+            "key": "baseLoadPercentile",
+            "condition": "model.showThresholds === true && model.autoDetectThresholds === true"
+          },
+          {
+            "key": "peakLoadPercentile",
+            "condition": "model.showThresholds === true && model.autoDetectThresholds === true"
+          },
+          {
+            "key": "manualBaseLoad",
+            "condition": "model.showThresholds === true && model.autoDetectThresholds === false"
+          },
+          {
+            "key": "manualPeakLoad",
+            "condition": "model.showThresholds === true && model.autoDetectThresholds === false"
+          },
+          {
+            "key": "baseLoadColor",
+            "type": "color",
+            "condition": "model.showThresholds === true"
+          },
+          {
+            "key": "peakLoadColor",
+            "type": "color",
+            "condition": "model.showThresholds === true"
+          },
+          "showMean",
+          {
+            "key": "meanColor",
+            "type": "color",
+            "condition": "model.showMean === true"
+          },
+          "showMedian",
+          {
+            "key": "medianColor",
+            "type": "color",
+            "condition": "model.showMedian === true"
+          }
+        ],
+        [
+          "showLegend",
+          {
+            "key": "legendStyle",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showLegend === true",
+            "items": [
+              {
+                "value": "classic",
+                "label": "Classic (Text)"
+              },
+              {
+                "value": "card",
+                "label": "Statistics Card"
+              }
+            ]
+          },
+          {
+            "key": "legendPosition",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showLegend === true",
+            "items": [
+              {
+                "value": "top",
+                "label": "Top"
+              },
+              {
+                "value": "bottom",
+                "label": "Bottom"
+              },
+              {
+                "value": "left",
+                "label": "Left"
+              },
+              {
+                "value": "right",
+                "label": "Right"
+              }
+            ]
+          },
+          {
+            "key": "legendAlign",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showLegend === true && model.legendStyle === 'card'",
+            "items": [
+              {
+                "value": "left",
+                "label": "Left"
+              },
+              {
+                "value": "center",
+                "label": "Center"
+              },
+              {
+                "value": "right",
+                "label": "Right"
+              }
+            ]
+          },
+          {
+            "key": "legendCardColorMode",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showLegend === true && model.legendStyle === 'card'",
+            "items": [
+              {
+                "value": "auto",
+                "label": "Auto (Series Color)"
+              },
+              {
+                "value": "manual",
+                "label": "Manual Color"
+              },
+              {
+                "value": "gradient",
+                "label": "Gradient"
+              }
+            ]
+          },
+          {
+            "key": "legendCardColor",
+            "type": "color",
+            "condition": "model.showLegend === true && model.legendStyle === 'card' && model.legendCardColorMode === 'manual'"
+          },
+          {
+            "key": "legendValues",
+            "type": "rc-select",
+            "multiple": true,
+            "condition": "model.showLegend === true && model.legendStyle === 'card'",
+            "items": [
+              {
+                "value": "current",
+                "label": "Current Value"
+              },
+              {
+                "value": "min",
+                "label": "Minimum"
+              },
+              {
+                "value": "max",
+                "label": "Maximum"
+              },
+              {
+                "value": "mean",
+                "label": "Mean"
+              },
+              {
+                "value": "median",
+                "label": "Median"
+              },
+              {
+                "value": "sum",
+                "label": "Sum"
+              },
+              {
+                "value": "count",
+                "label": "Count"
+              }
+            ]
+          },
+          {
+            "key": "showTimestamp",
+            "condition": "model.showLegend === true && model.legendStyle === 'card'"
+          },
+          {
+            "key": "timestampFormat",
+            "condition": "model.showLegend === true && model.legendStyle === 'card' && model.showTimestamp === true"
+          },
+          "showTooltip"
+        ],
+        [
+          "yAxisLabel",
+          "yAxisMin",
+          "yAxisMax"
+        ],
+        [
+          "removeOutliers",
+          {
+            "key": "outlierMethod",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.removeOutliers === true",
+            "items": [
+              {
+                "value": "iqr",
+                "label": "IQR (Interquartile Range)"
+              },
+              {
+                "value": "zscore",
+                "label": "Z-Score"
+              },
+              {
+                "value": "manual",
+                "label": "Manual Thresholds"
+              }
+            ]
+          },
+          {
+            "key": "outlierIqrMultiplier",
+            "condition": "model.removeOutliers === true && model.outlierMethod === 'iqr'"
+          },
+          {
+            "key": "outlierZscoreThreshold",
+            "condition": "model.removeOutliers === true && model.outlierMethod === 'zscore'"
+          },
+          {
+            "key": "outlierMinValue",
+            "condition": "model.removeOutliers === true && model.outlierMethod === 'manual'"
+          },
+          {
+            "key": "outlierMaxValue",
+            "condition": "model.removeOutliers === true && model.outlierMethod === 'manual'"
+          },
+          "smoothingEnabled",
+          {
+            "key": "smoothingWindow",
+            "condition": "model.smoothingEnabled === true"
+          }
+        ],
+        [
+          "showToolbox",
+          {
+            "key": "toolboxFeatures",
+            "type": "rc-select",
+            "multiple": true,
+            "condition": "model.showToolbox === true",
+            "items": [
+              {
+                "value": "saveAsImage",
+                "label": "Save as Image"
+              },
+              {
+                "value": "dataView",
+                "label": "Data View"
+              },
+              {
+                "value": "dataZoom",
+                "label": "Data Zoom"
+              },
+              {
+                "value": "restore",
+                "label": "Restore"
+              }
+            ]
+          }
+        ],
+        [
+          "showTimewindowSelector",
+          {
+            "key": "twSelectorColor",
+            "type": "color",
+            "condition": "model.showTimewindowSelector === true",
+            "description": "Leave empty for auto (uses series color)"
+          },
+          {
+            "key": "twSelectorPosition",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showTimewindowSelector === true",
+            "items": [
+              {
+                "value": "left",
+                "label": "Left"
+              },
+              {
+                "value": "center",
+                "label": "Center"
+              },
+              {
+                "value": "right",
+                "label": "Right"
+              }
+            ]
+          },
+          {
+            "key": "twSelectorDayFormat",
+            "condition": "model.showTimewindowSelector === true",
+            "description": "Format: D=day, DD=day(2), MMM=month, YYYY=year"
+          },
+          {
+            "key": "twSelectorWeekFormat",
+            "condition": "model.showTimewindowSelector === true"
+          },
+          {
+            "key": "twSelectorMonthFormat",
+            "condition": "model.showTimewindowSelector === true"
+          },
+          {
+            "key": "twCustomStartTime",
+            "condition": "model.showTimewindowSelector === true",
+            "description": "Use ${attributeName} for entity attributes"
+          },
+          {
+            "key": "twCustomEndTime",
+            "condition": "model.showTimewindowSelector === true",
+            "description": "Use ${attributeName} for entity attributes"
+          },
+          {
+            "key": "twAggregationType",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showTimewindowSelector === true",
+            "items": [
+              {
+                "value": "NONE",
+                "label": "None (Raw Data)"
+              },
+              {
+                "value": "AVG",
+                "label": "Average"
+              },
+              {
+                "value": "MIN",
+                "label": "Minimum"
+              },
+              {
+                "value": "MAX",
+                "label": "Maximum"
+              },
+              {
+                "value": "SUM",
+                "label": "Sum"
+              },
+              {
+                "value": "COUNT",
+                "label": "Count"
+              }
+            ]
+          },
+          {
+            "key": "twMaxDataPoints",
+            "condition": "model.showTimewindowSelector === true",
+            "description": "Maximum number of data points to fetch (default: 100000)"
+          }
+        ]
+      ],
+      "groupInfoes": [
         {
-          "key": "displayMode",
-          "type": "rc-select",
-          "multiple": false,
-          "items": [
-            { "value": "durationCurveOnly", "label": "Duration Curve Only" },
-            { "value": "splitView", "label": "Split View (Time Series + Duration Curve)" }
-          ]
-        },
-        "autoDetectThresholds",
-        {
-          "key": "baseLoadPercentile",
-          "condition": "model.autoDetectThresholds === true"
+          "formIndex": 0,
+          "GroupTitle": "Chart Settings"
         },
         {
-          "key": "peakLoadPercentile",
-          "condition": "model.autoDetectThresholds === true"
+          "formIndex": 1,
+          "GroupTitle": "Legend Settings"
         },
         {
-          "key": "manualBaseLoad",
-          "condition": "model.autoDetectThresholds === false"
+          "formIndex": 2,
+          "GroupTitle": "Y-Axis Settings"
         },
         {
-          "key": "manualPeakLoad",
-          "condition": "model.autoDetectThresholds === false"
+          "formIndex": 3,
+          "GroupTitle": "Data Processing"
         },
-        "baseLoadColor",
-        "peakLoadColor",
-        "showThresholdLabels",
-        "enableExport"
+        {
+          "formIndex": 4,
+          "GroupTitle": "Toolbox Settings"
+        },
+        {
+          "formIndex": 5,
+          "GroupTitle": "Timewindow Selector"
+        }
       ]
     },
     "dataKeySettingsSchema": {},
     "latestDataKeySettingsSchema": {},
-    "defaultConfig": "{\"datasources\":[{\"type\":\"function\",\"name\":\"function\",\"dataKeys\":[{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Power\",\"color\":\"#2196f3\",\"settings\":{},\"_hash\":0.123,\"funcBody\":\"var baseValue = 50;\\nvar variation = Math.sin(time / 3600000) * 20;\\nvar noise = Math.random() * 10 - 5;\\nvar spike = Math.random() > 0.95 ? 30 : 0;\\nreturn Math.max(0, baseValue + variation + noise + spike);\",\"units\":\"kW\",\"decimals\":2}]}],\"timewindow\":{\"hideInterval\":false,\"hideLastInterval\":false,\"hideQuickInterval\":false,\"hideAggregation\":false,\"hideAggInterval\":false,\"hideTimezone\":false,\"selectedTab\":0,\"realtime\":{\"realtimeType\":0,\"timewindowMs\":86400000,\"quickInterval\":\"CURRENT_DAY\",\"interval\":60000},\"aggregation\":{\"type\":\"AVG\",\"limit\":25000}},\"showTitle\":true,\"backgroundColor\":\"#fff\",\"color\":\"rgba(0, 0, 0, 0.87)\",\"padding\":\"8px\",\"settings\":{\"displayMode\":\"durationCurveOnly\",\"autoDetectThresholds\":true,\"baseLoadPercentile\":10,\"peakLoadPercentile\":95,\"manualBaseLoad\":null,\"manualPeakLoad\":null,\"baseLoadColor\":\"#4CAF50\",\"peakLoadColor\":\"#F44336\",\"showThresholdLabels\":true,\"enableExport\":true},\"title\":\"Load Duration Curve\",\"dropShadow\":true,\"enableFullscreen\":true,\"useDashboardTimewindow\":true,\"displayTimewindow\":true}"
+    "defaultConfig": "{\"datasources\":[{\"type\":\"function\",\"name\":\"function\",\"dataKeys\":[{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Power\",\"color\":\"#2196f3\",\"settings\":{},\"_hash\":0.123,\"funcBody\":\"var baseValue = 50;\\nvar variation = Math.sin(time / 3600000) * 20;\\nvar noise = Math.random() * 10 - 5;\\nvar spike = Math.random() > 0.95 ? 30 : 0;\\nreturn Math.max(0, baseValue + variation + noise + spike);\",\"units\":\"kW\",\"decimals\":2}]}],\"timewindow\":{\"hideInterval\":false,\"hideLastInterval\":false,\"hideQuickInterval\":false,\"hideAggregation\":false,\"hideAggInterval\":false,\"hideTimezone\":false,\"selectedTab\":0,\"realtime\":{\"realtimeType\":0,\"timewindowMs\":86400000,\"quickInterval\":\"CURRENT_DAY\",\"interval\":60000},\"aggregation\":{\"type\":\"AVG\",\"limit\":25000}},\"showTitle\":true,\"backgroundColor\":\"#fff\",\"color\":\"rgba(0, 0, 0, 0.87)\",\"padding\":\"8px\",\"settings\":{\"showDurationCurve\":true,\"showLoadProfile\":false,\"showThresholds\":false,\"showLegend\":true,\"showTooltip\":true,\"enablePngExport\":true,\"enableDataViewer\":true},\"title\":\"Duration Curve\",\"dropShadow\":true,\"enableFullscreen\":true,\"enableDataExport\":true,\"useDashboardTimewindow\":true,\"displayTimewindow\":true}"
   },
   "tags": [
     "chart",
     "timeseries",
     "duration curve",
-    "dauerkennlinie",
-    "load",
+    "load profile",
     "power",
     "energy",
     "threshold",
-    "echarts"
+    "echarts",
+    "outlier"
   ]
 }

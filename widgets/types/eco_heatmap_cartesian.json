@@ -15,7 +15,7 @@
     ],
     "templateHtml": "<div id=\"chart-container\" style=\"width: 100%; height: 100%;\"></div>",
     "templateCss": "#chart-container { position: relative; }",
-    "controllerScript": "var chart = null;\nvar chartContainer = null;\nvar zoomDebounceTimer = null;\nvar isExternalUpdate = false;\n\nself.onInit = function() {\n    chartContainer = self.ctx.$container.find('#chart-container')[0];\n    if (!chartContainer) {\n        console.error('Chart container not found');\n        return;\n    }\n    \n    if (typeof echarts === 'undefined') {\n        console.error('ECharts not loaded');\n        return;\n    }\n    \n    chart = echarts.init(chartContainer);\n    \n    var settings = self.ctx.settings || {};\n    if (settings.enableZoomSync !== false) {\n        chart.on('datazoom', handleZoomSync);\n    }\n    \n    updateChart();\n};\n\nfunction handleZoomSync(params) {\n    if (isExternalUpdate) return;\n    \n    var settings = self.ctx.settings || {};\n    if (settings.enableZoomSync === false) return;\n    \n    var debounceMs = settings.zoomSyncDebounce || 150;\n    \n    if (zoomDebounceTimer) {\n        clearTimeout(zoomDebounceTimer);\n    }\n    \n    zoomDebounceTimer = setTimeout(function() {\n        var option = chart.getOption();\n        var dataZoom = option.dataZoom && option.dataZoom[0];\n        if (!dataZoom) return;\n        \n        var timeWindow = self.ctx.timeWindow;\n        if (!timeWindow) return;\n        \n        var totalRange = timeWindow.maxTime - timeWindow.minTime;\n        var startPercent = dataZoom.start || 0;\n        var endPercent = dataZoom.end || 100;\n        \n        if (startPercent > 0.5 || endPercent < 99.5) {\n            var startTime = Math.round(timeWindow.minTime + (totalRange * startPercent / 100));\n            var endTime = Math.round(timeWindow.minTime + (totalRange * endPercent / 100));\n            \n            if (self.ctx.dashboard && self.ctx.dashboard.onUpdateTimewindow) {\n                self.ctx.dashboard.onUpdateTimewindow(startTime, endTime);\n            }\n        }\n    }, debounceMs);\n}\n\nself.onDataUpdated = function() {\n    isExternalUpdate = true;\n    updateChart();\n    setTimeout(function() { isExternalUpdate = false; }, 100);\n};\n\nfunction getTimeGroupKey(timestamp, grouping) {\n    var d = new Date(timestamp);\n    switch (grouping) {\n        case 'hour':\n            return d.getHours() + ':00';\n        case 'dayOfWeek':\n            return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()];\n        case 'day':\n            return d.getDate();\n        case 'week':\n            var startOfYear = new Date(d.getFullYear(), 0, 1);\n            return 'W' + Math.ceil(((d - startOfYear) / 86400000 + startOfYear.getDay() + 1) / 7);\n        case 'month':\n            return ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()];\n        default:\n            return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();\n    }\n}\n\nfunction getColorScheme(scheme, minColor, maxColor) {\n    switch (scheme) {\n        case 'blue':\n            return ['#E3F2FD', '#2196F3', '#0D47A1'];\n        case 'green':\n            return ['#E8F5E9', '#4CAF50', '#1B5E20'];\n        case 'red':\n            return ['#FFEBEE', '#F44336', '#B71C1C'];\n        case 'temperature':\n            return ['#2196F3', '#FFEB3B', '#F44336'];\n        case 'custom':\n            return [minColor || '#E3F2FD', maxColor || '#0D47A1'];\n        default:\n            return ['#E3F2FD', '#2196F3', '#0D47A1'];\n    }\n}\n\nfunction updateChart() {\n    if (!chart) return;\n    \n    var settings = self.ctx.settings || {};\n    var xAxisMode = settings.xAxisMode || 'time';\n    var yAxisMode = settings.yAxisMode || 'entity';\n    var timeGrouping = settings.timeGrouping || 'hour';\n    var colorScheme = settings.colorScheme || 'blue';\n    var minColor = settings.minColor || '#E3F2FD';\n    var maxColor = settings.maxColor || '#0D47A1';\n    var showVisualMap = settings.showVisualMap !== false;\n    var minValue = settings.minValue;\n    var maxValue = settings.maxValue;\n    var showDataZoomSlider = settings.showDataZoomSlider !== false;\n    var showLegend = settings.showLegend !== false;\n    var showTooltip = settings.showTooltip !== false;\n    var enableExport = settings.enableExport !== false;\n    \n    var data = self.ctx.data || [];\n    if (!data.length) {\n        chart.setOption({\n            title: { text: 'No data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    var xCategories = [];\n    var yCategories = [];\n    var heatmapData = [];\n    var allValues = [];\n    var units = '';\n    \n    // Build aggregated data\n    var aggregated = {}; // { xKey: { yKey: { sum: 0, count: 0 } } }\n    \n    for (var i = 0; i < data.length; i++) {\n        var ds = data[i];\n        if (!ds.data || !ds.data.length) continue;\n        \n        var entityLabel = (ds.dataKey && ds.dataKey.label) || (ds.datasource && ds.datasource.name) || 'Series ' + (i + 1);\n        if (!units && ds.dataKey) units = ds.dataKey.units || '';\n        \n        if (yAxisMode === 'entity' && yCategories.indexOf(entityLabel) === -1) {\n            yCategories.push(entityLabel);\n        }\n        \n        ds.data.forEach(function(d) {\n            if (d[1] === null || d[1] === undefined || isNaN(d[1])) return;\n            \n            var xKey;\n            if (xAxisMode === 'time') {\n                xKey = getTimeGroupKey(d[0], timeGrouping);\n            } else {\n                xKey = new Date(d[0]).toLocaleDateString();\n            }\n            \n            var yKey = entityLabel;\n            \n            if (!aggregated[xKey]) aggregated[xKey] = {};\n            if (!aggregated[xKey][yKey]) aggregated[xKey][yKey] = { sum: 0, count: 0 };\n            \n            aggregated[xKey][yKey].sum += d[1];\n            aggregated[xKey][yKey].count++;\n        });\n    }\n    \n    // Sort x categories appropriately\n    xCategories = Object.keys(aggregated);\n    if (xAxisMode === 'time') {\n        if (timeGrouping === 'hour') {\n            xCategories.sort(function(a, b) { return parseInt(a) - parseInt(b); });\n        } else if (timeGrouping === 'dayOfWeek') {\n            var dayOrder = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];\n            xCategories.sort(function(a, b) { return dayOrder.indexOf(a) - dayOrder.indexOf(b); });\n        } else if (timeGrouping === 'month') {\n            var monthOrder = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];\n            xCategories.sort(function(a, b) { return monthOrder.indexOf(a) - monthOrder.indexOf(b); });\n        } else {\n            xCategories.sort();\n        }\n    } else {\n        xCategories.sort();\n    }\n    \n    // Build heatmap data array\n    for (var xi = 0; xi < xCategories.length; xi++) {\n        for (var yi = 0; yi < yCategories.length; yi++) {\n            var xKey = xCategories[xi];\n            var yKey = yCategories[yi];\n            var val = null;\n            \n            if (aggregated[xKey] && aggregated[xKey][yKey]) {\n                val = aggregated[xKey][yKey].sum / aggregated[xKey][yKey].count;\n            }\n            \n            if (val !== null) {\n                heatmapData.push([xi, yi, val]);\n                allValues.push(val);\n            }\n        }\n    }\n    \n    if (heatmapData.length === 0) {\n        chart.setOption({\n            title: { text: 'No valid heatmap data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    var dataMin = minValue !== undefined && minValue !== null ? minValue : Math.min.apply(null, allValues);\n    var dataMax = maxValue !== undefined && maxValue !== null ? maxValue : Math.max.apply(null, allValues);\n    var colorRange = getColorScheme(colorScheme, minColor, maxColor);\n    \n    var option = {\n        tooltip: showTooltip ? {\n            formatter: function(params) {\n                return xCategories[params.data[0]] + ' / ' + yCategories[params.data[1]] + '<br/>' +\n                    'Value: ' + params.data[2].toFixed(2) + ' ' + units;\n            }\n        } : {},\n        toolbox: enableExport ? {\n            feature: {\n                saveAsImage: { title: 'Save as PNG' },\n                dataView: { title: 'Data View', readOnly: true }\n            },\n            right: 10\n        } : {},\n        grid: {\n            left: 80,\n            right: showVisualMap ? 100 : (enableExport ? 80 : 20),\n            top: 20,\n            bottom: showDataZoomSlider ? 60 : 40\n        },\n        xAxis: {\n            type: 'category',\n            data: xCategories,\n            axisLabel: { fontSize: 9, rotate: xCategories.length > 12 ? 45 : 0 },\n            splitArea: { show: true }\n        },\n        yAxis: {\n            type: 'category',\n            data: yCategories,\n            axisLabel: { fontSize: 10 },\n            splitArea: { show: true }\n        },\n        visualMap: showVisualMap ? {\n            min: dataMin,\n            max: dataMax,\n            calculable: true,\n            orient: 'vertical',\n            right: 10,\n            top: 'center',\n            inRange: {\n                color: colorRange\n            },\n            text: [units ? 'High (' + units + ')' : 'High', 'Low'],\n            textStyle: { fontSize: 10 }\n        } : {\n            show: false,\n            min: dataMin,\n            max: dataMax,\n            inRange: { color: colorRange }\n        },\n        dataZoom: [\n            { type: 'inside', xAxisIndex: 0 },\n            showDataZoomSlider ? { type: 'slider', xAxisIndex: 0, bottom: 5, height: 20 } : null\n        ].filter(function(x) { return x !== null; }),\n        series: [{\n            name: 'Heatmap',\n            type: 'heatmap',\n            data: heatmapData,\n            label: {\n                show: heatmapData.length <= 100,\n                fontSize: 9,\n                formatter: function(params) {\n                    return params.data[2].toFixed(1);\n                }\n            },\n            emphasis: {\n                itemStyle: {\n                    shadowBlur: 10,\n                    shadowColor: 'rgba(0, 0, 0, 0.5)'\n                }\n            }\n        }]\n    };\n    \n    chart.setOption(option, true);\n}\n\nself.onResize = function() {\n    if (chart) {\n        chart.resize();\n    }\n};\n\nself.onDestroy = function() {\n    if (chart) {\n        chart.off('datazoom');\n        chart.dispose();\n        chart = null;\n    }\n    if (zoomDebounceTimer) {\n        clearTimeout(zoomDebounceTimer);\n    }\n};\n\nself.typeParameters = function() {\n    return {\n        previewWidth: '80%',\n        embedTitlePanel: true,\n        dataKeySettingsFunction: function() { return {}; },\n        defaultDataKeysFunction: function() {\n            return [{ name: 'value', label: 'Value', type: 'timeseries' }];\n        }\n    };\n};\n",
+    "controllerScript": "var chart = null;\n// Timewindow selector state\nvar twState = {\n    mode: 'day',  // 'day', 'week', 'month', 'custom'\n    currentDate: new Date()  // Reference date for navigation\n};\n\n// Cached settings for timewindow selector\nvar twSettings = {};\nvar timewindowSelectorContainer = null;\n\nvar chartContainer = null;\nvar zoomDebounceTimer = null;\nvar isExternalUpdate = false;\n\nself.onInit = function() {\n    chartContainer = self.ctx.$container.find('#chart-container')[0];\n    if (!chartContainer) {\n        console.error('Chart container not found');\n        return;\n    }\n    \n    if (typeof echarts === 'undefined') {\n        console.error('ECharts not loaded');\n        return;\n    }\n    \n    chart = echarts.init(chartContainer);\n    \n    var settings = self.ctx.settings || {};\n    // Timewindow selector settings\n    var showTimewindowSelector = settings.showTimewindowSelector === true;\n\n    // Cache timewindow selector settings for use in render function\n    twSettings = {\n        color: settings.twSelectorColor || '',\n        position: settings.twSelectorPosition || 'center',\n        dayFormat: settings.twSelectorDayFormat || 'D MMM YYYY',\n        weekFormat: settings.twSelectorWeekFormat || 'D-D MMM',\n        monthFormat: settings.twSelectorMonthFormat || 'MMM YYYY',\n        customStartTime: settings.twCustomStartTime || '',\n        customEndTime: settings.twCustomEndTime || '',\n        aggregationType: settings.twAggregationType || 'NONE',\n        maxDataPoints: settings.twMaxDataPoints || 100000\n    };\n\n    // Render timewindow selector if enabled\n    if (showTimewindowSelector && self.ctx.dashboard) {\n        renderTimewindowSelector();\n    } else if (timewindowSelectorContainer) {\n        timewindowSelectorContainer.style.display = 'none';\n    }\n\n    if (settings.enableZoomSync !== false) {\n        chart.on('datazoom', handleZoomSync);\n    }\n    \n    updateChart();\n};\n\nfunction handleZoomSync(params) {\n    if (isExternalUpdate) return;\n    \n    var settings = self.ctx.settings || {};\n    if (settings.enableZoomSync === false) return;\n    \n    var debounceMs = settings.zoomSyncDebounce || 150;\n    \n    if (zoomDebounceTimer) {\n        clearTimeout(zoomDebounceTimer);\n    }\n    \n    zoomDebounceTimer = setTimeout(function() {\n        var option = chart.getOption();\n        var dataZoom = option.dataZoom && option.dataZoom[0];\n        if (!dataZoom) return;\n        \n        var timeWindow = self.ctx.timeWindow;\n        if (!timeWindow) return;\n        \n        var totalRange = timeWindow.maxTime - timeWindow.minTime;\n        var startPercent = dataZoom.start || 0;\n        var endPercent = dataZoom.end || 100;\n        \n        if (startPercent > 0.5 || endPercent < 99.5) {\n            var startTime = Math.round(timeWindow.minTime + (totalRange * startPercent / 100));\n            var endTime = Math.round(timeWindow.minTime + (totalRange * endPercent / 100));\n            \n            if (self.ctx.dashboard && self.ctx.dashboard.onUpdateTimewindow) {\n                self.ctx.dashboard.onUpdateTimewindow(startTime, endTime);\n            }\n        }\n    }, debounceMs);\n}\n\nself.onDataUpdated = function() {\n    isExternalUpdate = true;\n    updateChart();\n    setTimeout(function() { isExternalUpdate = false; }, 100);\n};\n\nfunction getTimeGroupKey(timestamp, grouping) {\n    var d = new Date(timestamp);\n    switch (grouping) {\n        case 'hour':\n            return d.getHours() + ':00';\n        case 'dayOfWeek':\n            return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()];\n        case 'day':\n            return d.getDate();\n        case 'week':\n            var startOfYear = new Date(d.getFullYear(), 0, 1);\n            return 'W' + Math.ceil(((d - startOfYear) / 86400000 + startOfYear.getDay() + 1) / 7);\n        case 'month':\n            return ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()];\n        default:\n            return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();\n    }\n}\n\nfunction getColorScheme(scheme, minColor, maxColor) {\n    switch (scheme) {\n        case 'blue':\n            return ['#E3F2FD', '#2196F3', '#0D47A1'];\n        case 'green':\n            return ['#E8F5E9', '#4CAF50', '#1B5E20'];\n        case 'red':\n            return ['#FFEBEE', '#F44336', '#B71C1C'];\n        case 'temperature':\n            return ['#2196F3', '#FFEB3B', '#F44336'];\n        case 'custom':\n            return [minColor || '#E3F2FD', maxColor || '#0D47A1'];\n        default:\n            return ['#E3F2FD', '#2196F3', '#0D47A1'];\n    }\n}\n\nfunction updateChart() {\n    if (!chart) return;\n    \n    var settings = self.ctx.settings || {};\n    var xAxisMode = settings.xAxisMode || 'time';\n    var yAxisMode = settings.yAxisMode || 'entity';\n    var timeGrouping = settings.timeGrouping || 'hour';\n    var colorScheme = settings.colorScheme || 'blue';\n    var minColor = settings.minColor || '#E3F2FD';\n    var maxColor = settings.maxColor || '#0D47A1';\n    var showVisualMap = settings.showVisualMap !== false;\n    var minValue = settings.minValue;\n    var maxValue = settings.maxValue;\n    var showDataZoomSlider = settings.showDataZoomSlider !== false;\n    var showLegend = settings.showLegend !== false;\n    var showTooltip = settings.showTooltip !== false;\n    var enableExport = settings.enableExport !== false;\n    \n    var data = self.ctx.data || [];\n    if (!data.length) {\n        chart.setOption({\n            title: { text: 'No data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    var xCategories = [];\n    var yCategories = [];\n    var heatmapData = [];\n    var allValues = [];\n    var units = '';\n    \n    // Build aggregated data\n    var aggregated = {}; // { xKey: { yKey: { sum: 0, count: 0 } } }\n    \n    for (var i = 0; i < data.length; i++) {\n        var ds = data[i];\n        if (!ds.data || !ds.data.length) continue;\n        \n        var entityLabel = (ds.dataKey && ds.dataKey.label) || (ds.datasource && ds.datasource.name) || 'Series ' + (i + 1);\n        if (!units && ds.dataKey) units = ds.dataKey.units || '';\n        \n        if (yAxisMode === 'entity' && yCategories.indexOf(entityLabel) === -1) {\n            yCategories.push(entityLabel);\n        }\n        \n        ds.data.forEach(function(d) {\n            if (d[1] === null || d[1] === undefined || isNaN(d[1])) return;\n            \n            var xKey;\n            if (xAxisMode === 'time') {\n                xKey = getTimeGroupKey(d[0], timeGrouping);\n            } else {\n                xKey = new Date(d[0]).toLocaleDateString();\n            }\n            \n            var yKey = entityLabel;\n            \n            if (!aggregated[xKey]) aggregated[xKey] = {};\n            if (!aggregated[xKey][yKey]) aggregated[xKey][yKey] = { sum: 0, count: 0 };\n            \n            aggregated[xKey][yKey].sum += d[1];\n            aggregated[xKey][yKey].count++;\n        });\n    }\n    \n    // Sort x categories appropriately\n    xCategories = Object.keys(aggregated);\n    if (xAxisMode === 'time') {\n        if (timeGrouping === 'hour') {\n            xCategories.sort(function(a, b) { return parseInt(a) - parseInt(b); });\n        } else if (timeGrouping === 'dayOfWeek') {\n            var dayOrder = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];\n            xCategories.sort(function(a, b) { return dayOrder.indexOf(a) - dayOrder.indexOf(b); });\n        } else if (timeGrouping === 'month') {\n            var monthOrder = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];\n            xCategories.sort(function(a, b) { return monthOrder.indexOf(a) - monthOrder.indexOf(b); });\n        } else {\n            xCategories.sort();\n        }\n    } else {\n        xCategories.sort();\n    }\n    \n    // Build heatmap data array\n    for (var xi = 0; xi < xCategories.length; xi++) {\n        for (var yi = 0; yi < yCategories.length; yi++) {\n            var xKey = xCategories[xi];\n            var yKey = yCategories[yi];\n            var val = null;\n            \n            if (aggregated[xKey] && aggregated[xKey][yKey]) {\n                val = aggregated[xKey][yKey].sum / aggregated[xKey][yKey].count;\n            }\n            \n            if (val !== null) {\n                heatmapData.push([xi, yi, val]);\n                allValues.push(val);\n            }\n        }\n    }\n    \n    if (heatmapData.length === 0) {\n        chart.setOption({\n            title: { text: 'No valid heatmap data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    var dataMin = minValue !== undefined && minValue !== null ? minValue : Math.min.apply(null, allValues);\n    var dataMax = maxValue !== undefined && maxValue !== null ? maxValue : Math.max.apply(null, allValues);\n    var colorRange = getColorScheme(colorScheme, minColor, maxColor);\n    \n    var option = {\n        tooltip: showTooltip ? {\n            formatter: function(params) {\n                return xCategories[params.data[0]] + ' / ' + yCategories[params.data[1]] + '<br/>' +\n                    'Value: ' + params.data[2].toFixed(2) + ' ' + units;\n            }\n        } : {},\n        toolbox: enableExport ? {\n            feature: {\n                saveAsImage: { title: 'Save as PNG' },\n                dataView: { title: 'Data View', readOnly: true }\n            },\n            right: 10\n        } : {},\n        grid: {\n            left: 80,\n            right: showVisualMap ? 100 : (enableExport ? 80 : 20),\n            top: 20,\n            bottom: showDataZoomSlider ? 60 : 40\n        },\n        xAxis: {\n            type: 'category',\n            data: xCategories,\n            axisLabel: { fontSize: 9, rotate: xCategories.length > 12 ? 45 : 0 },\n            splitArea: { show: true }\n        },\n        yAxis: {\n            type: 'category',\n            data: yCategories,\n            axisLabel: { fontSize: 10 },\n            splitArea: { show: true }\n        },\n        visualMap: showVisualMap ? {\n            min: dataMin,\n            max: dataMax,\n            calculable: true,\n            orient: 'vertical',\n            right: 10,\n            top: 'center',\n            inRange: {\n                color: colorRange\n            },\n            text: [units ? 'High (' + units + ')' : 'High', 'Low'],\n            textStyle: { fontSize: 10 }\n        } : {\n            show: false,\n            min: dataMin,\n            max: dataMax,\n            inRange: { color: colorRange }\n        },\n        dataZoom: [\n            { type: 'inside', xAxisIndex: 0 },\n            showDataZoomSlider ? { type: 'slider', xAxisIndex: 0, bottom: 5, height: 20 } : null\n        ].filter(function(x) { return x !== null; }),\n        series: [{\n            name: 'Heatmap',\n            type: 'heatmap',\n            data: heatmapData,\n            label: {\n                show: heatmapData.length <= 100,\n                fontSize: 9,\n                formatter: function(params) {\n                    return params.data[2].toFixed(1);\n                }\n            },\n            emphasis: {\n                itemStyle: {\n                    shadowBlur: 10,\n                    shadowColor: 'rgba(0, 0, 0, 0.5)'\n                }\n            }\n        }]\n    };\n    \n    chart.setOption(option, true);\n}\n\n\n// ========================================\n// Timewindow Selector Functions\n// ========================================\n\nfunction renderTimewindowSelector() {\n    if (!timewindowSelectorContainer) return;\n\n    while (timewindowSelectorContainer.firstChild) {\n        timewindowSelectorContainer.removeChild(timewindowSelectorContainer.firstChild);\n    }\n\n    var positionMap = { left: 'flex-start', center: 'center', right: 'flex-end' };\n    var position = twSettings.position || 'center';\n\n    timewindowSelectorContainer.style.display = 'flex';\n    timewindowSelectorContainer.style.alignItems = 'center';\n    timewindowSelectorContainer.style.justifyContent = positionMap[position] || 'center';\n    timewindowSelectorContainer.style.gap = '8px';\n    timewindowSelectorContainer.style.padding = '8px';\n\n    var accentColor = '#2196F3';\n    if (twSettings.color && twSettings.color !== '') {\n        accentColor = twSettings.color;\n    } else if (self.ctx.data && self.ctx.data[0] && self.ctx.data[0].dataKey && self.ctx.data[0].dataKey.color) {\n        accentColor = self.ctx.data[0].dataKey.color;\n    }\n\n    var wrapper = document.createElement('div');\n    wrapper.style.cssText = 'display: flex; align-items: center; gap: 6px; background: ' + accentColor + '; border-radius: 6px; padding: 6px 10px; box-shadow: 0 2px 6px rgba(0,0,0,0.12);';\n\n    var hasCustomRange = twSettings.customStartTime || twSettings.customEndTime;\n\n    if (twState.mode !== 'custom') {\n        var prevBtn = createNavButton('◀', accentColor, function() { navigateTimewindow(-1); });\n        wrapper.appendChild(prevBtn);\n    }\n\n    var periodBtns = document.createElement('div');\n    periodBtns.style.cssText = 'display: flex; gap: 4px;';\n\n    ['day', 'week', 'month'].forEach(function(mode) {\n        var btn = createPeriodButton(mode, accentColor);\n        periodBtns.appendChild(btn);\n    });\n\n    if (hasCustomRange) {\n        var customBtn = createPeriodButton('custom', accentColor);\n        periodBtns.appendChild(customBtn);\n    }\n\n    wrapper.appendChild(periodBtns);\n\n    if (twState.mode !== 'custom') {\n        var nextBtn = createNavButton('▶', accentColor, function() { navigateTimewindow(1); });\n        wrapper.appendChild(nextBtn);\n    }\n\n    var periodLabel = document.createElement('span');\n    periodLabel.id = 'tw-period-label';\n    periodLabel.style.cssText = 'color: white; font-size: 11px; margin-left: 8px; opacity: 0.9;';\n    periodLabel.textContent = formatPeriodLabel(twState.mode, twState.currentDate);\n    wrapper.appendChild(periodLabel);\n\n    timewindowSelectorContainer.appendChild(wrapper);\n}\n\nfunction createNavButton(symbol, accentColor, onClick) {\n    var btn = document.createElement('button');\n    btn.textContent = symbol;\n    btn.style.cssText = 'background: rgba(255,255,255,0.2); border: none; color: white; width: 24px; height: 24px; border-radius: 4px; cursor: pointer; font-size: 10px; display: flex; align-items: center; justify-content: center; transition: background 0.2s;';\n    btn.onmouseover = function() { btn.style.background = 'rgba(255,255,255,0.35)'; };\n    btn.onmouseout = function() { btn.style.background = 'rgba(255,255,255,0.2)'; };\n    btn.onclick = onClick;\n    return btn;\n}\n\nfunction createPeriodButton(mode, accentColor) {\n    var labels = { day: 'D', week: 'W', month: 'M', custom: 'C' };\n    var titles = { day: 'Day', week: 'Week', month: 'Month', custom: 'Custom Range' };\n\n    var btn = document.createElement('button');\n    btn.textContent = labels[mode];\n    btn.title = titles[mode];\n    btn.setAttribute('data-mode', mode);\n\n    var isActive = twState.mode === mode;\n    var baseStyle = 'border: none; width: 28px; height: 24px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600; transition: all 0.2s;';\n    var activeStyle = 'background: white; color: ' + accentColor + ';';\n    var inactiveStyle = 'background: rgba(255,255,255,0.2); color: white;';\n\n    btn.style.cssText = baseStyle + (isActive ? activeStyle : inactiveStyle);\n\n    btn.onmouseover = function() { if (twState.mode !== mode) { btn.style.background = 'rgba(255,255,255,0.35)'; } };\n    btn.onmouseout = function() { if (twState.mode !== mode) { btn.style.background = 'rgba(255,255,255,0.2)'; } };\n    btn.onclick = function() { selectPeriodMode(mode); };\n\n    return btn;\n}\n\nfunction selectPeriodMode(mode) {\n    twState.mode = mode;\n    if (mode !== 'custom') {\n        twState.currentDate = new Date();\n    }\n    applyTimewindow();\n    renderTimewindowSelector();\n}\n\nfunction navigateTimewindow(direction) {\n    var d = new Date(twState.currentDate);\n\n    switch (twState.mode) {\n        case 'day': d.setDate(d.getDate() + direction); break;\n        case 'week': d.setDate(d.getDate() + (direction * 7)); break;\n        case 'month': d.setMonth(d.getMonth() + direction); break;\n    }\n\n    twState.currentDate = d;\n    applyTimewindow();\n    updatePeriodLabel();\n}\n\nfunction applyTimewindow() {\n    var range;\n\n    if (twState.mode === 'custom') {\n        range = calculateCustomTimeRange();\n    } else {\n        range = calculateTimeRange(twState.mode, twState.currentDate);\n    }\n\n    if (!range) return;\n\n    var timewindow = {\n        history: {\n            fixedTimewindow: { startTimeMs: range.start, endTimeMs: range.end },\n            historyType: 0\n        },\n        aggregation: {\n            type: twSettings.aggregationType || 'NONE',\n            limit: twSettings.maxDataPoints || 100000\n        }\n    };\n\n    var useDashboardTimewindow = self.ctx.widget.config.useDashboardTimewindow;\n\n    if (useDashboardTimewindow !== false) {\n        if (self.ctx.dashboard && self.ctx.dashboard.updateDashboardTimewindow) {\n            self.ctx.dashboard.updateDashboardTimewindow(timewindow);\n        } else if (self.ctx.dashboard && self.ctx.dashboard.onUpdateTimewindow) {\n            self.ctx.dashboard.onUpdateTimewindow(range.start, range.end);\n        }\n    } else {\n        if (self.ctx.timewindowFunctions && self.ctx.timewindowFunctions.onUpdateTimewindow) {\n            self.ctx.timewindowFunctions.onUpdateTimewindow(range.start, range.end);\n        }\n    }\n}\n\nfunction calculateCustomTimeRange() {\n    var startStr = twSettings.customStartTime || '';\n    var endStr = twSettings.customEndTime || '';\n\n    var startMs = resolveTimeValue(startStr);\n    var endMs = resolveTimeValue(endStr);\n\n    if (startMs === null) {\n        var now = new Date();\n        startMs = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime();\n    }\n    if (endMs === null) {\n        var now2 = new Date();\n        endMs = new Date(now2.getFullYear(), now2.getMonth(), now2.getDate(), 23, 59, 59, 999).getTime();\n    }\n\n    return { start: startMs, end: endMs };\n}\n\nfunction resolveTimeValue(valueStr) {\n    if (!valueStr || valueStr === '') return null;\n\n    var varMatch = valueStr.match(/^\\$\\{(.+)\\}$/);\n    if (varMatch) {\n        var attrName = varMatch[1];\n        return resolveEntityAttribute(attrName);\n    }\n\n    var numVal = Number(valueStr);\n    if (!isNaN(numVal) && numVal > 0) return numVal;\n\n    var dateVal = Date.parse(valueStr);\n    if (!isNaN(dateVal)) return dateVal;\n\n    return null;\n}\n\nfunction resolveEntityAttribute(attrName) {\n    if (self.ctx.datasources && self.ctx.datasources.length > 0) {\n        var ds = self.ctx.datasources[0];\n        if (ds.entity) {\n            if (ds.entity.attributes && ds.entity.attributes[attrName] !== undefined) {\n                return Number(ds.entity.attributes[attrName]);\n            }\n            if (ds.entity.sharedAttributes && ds.entity.sharedAttributes[attrName] !== undefined) {\n                return Number(ds.entity.sharedAttributes[attrName]);\n            }\n        }\n        if (self.ctx.latestData) {\n            for (var i = 0; i < self.ctx.latestData.length; i++) {\n                var ld = self.ctx.latestData[i];\n                if (ld.dataKey && ld.dataKey.name === attrName && ld.data && ld.data.length > 0) {\n                    return Number(ld.data[ld.data.length - 1][1]);\n                }\n            }\n        }\n    }\n    return null;\n}\n\nfunction calculateTimeRange(mode, referenceDate) {\n    var start, end;\n    var d = new Date(referenceDate);\n\n    switch (mode) {\n        case 'day':\n            start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);\n            end = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);\n            break;\n        case 'week':\n            var dayOfWeek = d.getDay();\n            var diffToMonday = (dayOfWeek === 0 ? -6 : 1) - dayOfWeek;\n            var monday = new Date(d);\n            monday.setDate(d.getDate() + diffToMonday);\n            start = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate(), 0, 0, 0, 0);\n            var sunday = new Date(monday);\n            sunday.setDate(monday.getDate() + 6);\n            end = new Date(sunday.getFullYear(), sunday.getMonth(), sunday.getDate(), 23, 59, 59, 999);\n            break;\n        case 'month':\n            start = new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);\n            end = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);\n            break;\n    }\n\n    return { start: start.getTime(), end: end.getTime() };\n}\n\nfunction formatPeriodLabel(mode, date) {\n    var d = new Date(date);\n\n    switch (mode) {\n        case 'day':\n            return formatDateString(d, twSettings.dayFormat || 'D MMM YYYY');\n        case 'week':\n            var range = calculateTimeRange('week', d);\n            var startD = new Date(range.start);\n            var endD = new Date(range.end);\n            if (startD.getMonth() === endD.getMonth()) {\n                return startD.getDate() + '-' + endD.getDate() + ' ' + getMonthShort(startD.getMonth());\n            } else {\n                return startD.getDate() + ' ' + getMonthShort(startD.getMonth()) + ' - ' + endD.getDate() + ' ' + getMonthShort(endD.getMonth());\n            }\n        case 'month':\n            return formatDateString(d, twSettings.monthFormat || 'MMM YYYY');\n        case 'custom':\n            var customRange = calculateCustomTimeRange();\n            if (customRange) {\n                var startDate = new Date(customRange.start);\n                var endDate = new Date(customRange.end);\n                return formatDateString(startDate, 'DD.MM.YY') + ' - ' + formatDateString(endDate, 'DD.MM.YY');\n            }\n            return 'Custom';\n    }\n\n    return '';\n}\n\nfunction formatDateString(date, format) {\n    var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];\n    var d = new Date(date);\n\n    return format\n        .replace('YYYY', d.getFullYear())\n        .replace('YY', String(d.getFullYear()).slice(-2))\n        .replace('MMM', months[d.getMonth()])\n        .replace('MM', String(d.getMonth() + 1).padStart(2, '0'))\n        .replace('DD', String(d.getDate()).padStart(2, '0'))\n        .replace('D', d.getDate());\n}\n\nfunction getMonthShort(monthIndex) {\n    var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];\n    return months[monthIndex];\n}\n\nfunction updatePeriodLabel() {\n    var labelEl = document.getElementById('tw-period-label');\n    if (labelEl) {\n        labelEl.textContent = formatPeriodLabel(twState.mode, twState.currentDate);\n    }\n}\n\n// ========================================\n// End Timewindow Selector Functions\n// ========================================\n\n\nself.onResize = function() {\n    if (chart) {\n        chart.resize();\n    }\n};\n\nself.onDestroy = function() {\n    if (chart) {\n        chart.off('datazoom');\n        chart.dispose();\n        chart = null;\n    }\n    if (zoomDebounceTimer) {\n        clearTimeout(zoomDebounceTimer);\n    }\n};\n\nself.typeParameters = function() {\n    return {\n        previewWidth: '80%',\n        embedTitlePanel: true,\n        dataKeySettingsFunction: function() { return {}; },\n        defaultDataKeysFunction: function() {\n            return [{ name: 'value', label: 'Value', type: 'timeseries' }];\n        }\n    };\n};\n",
     "settingsSchema": {
       "schema": {
         "type": "object",
@@ -42,25 +42,43 @@
             "title": "X-Axis Mode",
             "type": "string",
             "default": "time",
-            "enum": ["time", "category"]
+            "enum": [
+              "time",
+              "category"
+            ]
           },
           "yAxisMode": {
             "title": "Y-Axis Mode",
             "type": "string",
             "default": "entity",
-            "enum": ["entity", "key"]
+            "enum": [
+              "entity",
+              "key"
+            ]
           },
           "timeGrouping": {
             "title": "Time Grouping",
             "type": "string",
             "default": "hour",
-            "enum": ["hour", "dayOfWeek", "day", "week", "month"]
+            "enum": [
+              "hour",
+              "dayOfWeek",
+              "day",
+              "week",
+              "month"
+            ]
           },
           "colorScheme": {
             "title": "Color Scheme",
             "type": "string",
             "default": "blue",
-            "enum": ["blue", "green", "red", "temperature", "custom"]
+            "enum": [
+              "blue",
+              "green",
+              "red",
+              "temperature",
+              "custom"
+            ]
           },
           "minColor": {
             "title": "Min Color (custom)",
@@ -94,6 +112,200 @@
             "title": "Enable Export (PNG/Data)",
             "type": "boolean",
             "default": true
+          },
+          "showTimewindowSelector": {
+            "title": "Show Timewindow Selector",
+            "type": "boolean",
+            "default": false
+          },
+          "twSelectorColor": {
+            "title": "Selector Color",
+            "type": "string",
+            "default": ""
+          },
+          "twSelectorPosition": {
+            "title": "Selector Position",
+            "type": "string",
+            "default": "center",
+            "enum": [
+              "left",
+              "center",
+              "right"
+            ]
+          },
+          "twSelectorDayFormat": {
+            "title": "Day Format",
+            "type": "string",
+            "default": "D MMM YYYY"
+          },
+          "twSelectorWeekFormat": {
+            "title": "Week Format",
+            "type": "string",
+            "default": "D-D MMM"
+          },
+          "twSelectorMonthFormat": {
+            "title": "Month Format",
+            "type": "string",
+            "default": "MMM YYYY"
+          },
+          "twCustomStartTime": {
+            "title": "Custom Start Time",
+            "type": "string",
+            "default": ""
+          },
+          "twCustomEndTime": {
+            "title": "Custom End Time",
+            "type": "string",
+            "default": ""
+          },
+          "twAggregationType": {
+            "title": "Aggregation",
+            "type": "string",
+            "default": "NONE",
+            "enum": [
+              "NONE",
+              "AVG",
+              "MIN",
+              "MAX",
+              "SUM",
+              "COUNT"
+            ]
+          },
+          "twMaxDataPoints": {
+            "title": "Max Data Points",
+            "type": "number",
+            "default": 100000
+          },
+          "showLegend": {
+            "title": "Show Legend",
+            "type": "boolean",
+            "default": true
+          },
+          "legendStyle": {
+            "title": "Legend Style",
+            "type": "string",
+            "default": "classic",
+            "enum": [
+              "classic",
+              "card"
+            ]
+          },
+          "legendPosition": {
+            "title": "Legend Position",
+            "type": "string",
+            "default": "bottom",
+            "enum": [
+              "top",
+              "bottom",
+              "left",
+              "right"
+            ]
+          },
+          "legendAlign": {
+            "title": "Legend Alignment",
+            "type": "string",
+            "default": "center",
+            "enum": [
+              "left",
+              "center",
+              "right"
+            ]
+          },
+          "legendCardColorMode": {
+            "title": "Card Color Mode",
+            "type": "string",
+            "default": "auto",
+            "enum": [
+              "auto",
+              "manual",
+              "gradient"
+            ]
+          },
+          "legendCardColor": {
+            "title": "Card Color",
+            "type": "string",
+            "default": "#2196F3"
+          },
+          "legendValues": {
+            "title": "Statistics to Display",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [
+              "current"
+            ]
+          },
+          "showTimestamp": {
+            "title": "Show Timestamp",
+            "type": "boolean",
+            "default": true
+          },
+          "timestampFormat": {
+            "title": "Timestamp Format",
+            "type": "string",
+            "default": "YYYY-MM-DD HH:mm:ss"
+          },
+          "removeOutliers": {
+            "title": "Remove Outliers",
+            "type": "boolean",
+            "default": false
+          },
+          "outlierMethod": {
+            "title": "Outlier Method",
+            "type": "string",
+            "default": "iqr",
+            "enum": [
+              "iqr",
+              "zscore",
+              "manual"
+            ]
+          },
+          "outlierIqrMultiplier": {
+            "title": "IQR Multiplier",
+            "type": "number",
+            "default": 1.5
+          },
+          "outlierZscoreThreshold": {
+            "title": "Z-Score Threshold",
+            "type": "number",
+            "default": 3
+          },
+          "outlierMinValue": {
+            "title": "Minimum Value",
+            "type": "number"
+          },
+          "outlierMaxValue": {
+            "title": "Maximum Value",
+            "type": "number"
+          },
+          "smoothingEnabled": {
+            "title": "Enable Smoothing",
+            "type": "boolean",
+            "default": false
+          },
+          "smoothingWindowMinutes": {
+            "title": "Smoothing Window (minutes)",
+            "type": "number",
+            "default": 15
+          },
+          "showToolbox": {
+            "title": "Show Toolbox",
+            "type": "boolean",
+            "default": true
+          },
+          "toolboxFeatures": {
+            "title": "Toolbox Features",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [
+              "saveAsImage",
+              "dataView",
+              "dataZoom",
+              "restore"
+            ]
           }
         },
         "required": []
@@ -110,8 +322,14 @@
           "type": "rc-select",
           "multiple": false,
           "items": [
-            { "value": "time", "label": "Time-based" },
-            { "value": "category", "label": "Date categories" }
+            {
+              "value": "time",
+              "label": "Time-based"
+            },
+            {
+              "value": "category",
+              "label": "Date categories"
+            }
           ]
         },
         {
@@ -119,8 +337,14 @@
           "type": "rc-select",
           "multiple": false,
           "items": [
-            { "value": "entity", "label": "Entity/Series name" },
-            { "value": "key", "label": "Data key name" }
+            {
+              "value": "entity",
+              "label": "Entity/Series name"
+            },
+            {
+              "value": "key",
+              "label": "Data key name"
+            }
           ]
         },
         {
@@ -129,11 +353,26 @@
           "multiple": false,
           "condition": "model.xAxisMode === 'time'",
           "items": [
-            { "value": "hour", "label": "Hour of day (0-23)" },
-            { "value": "dayOfWeek", "label": "Day of week" },
-            { "value": "day", "label": "Day of month" },
-            { "value": "week", "label": "Week number" },
-            { "value": "month", "label": "Month" }
+            {
+              "value": "hour",
+              "label": "Hour of day (0-23)"
+            },
+            {
+              "value": "dayOfWeek",
+              "label": "Day of week"
+            },
+            {
+              "value": "day",
+              "label": "Day of month"
+            },
+            {
+              "value": "week",
+              "label": "Week number"
+            },
+            {
+              "value": "month",
+              "label": "Month"
+            }
           ]
         },
         {
@@ -141,11 +380,26 @@
           "type": "rc-select",
           "multiple": false,
           "items": [
-            { "value": "blue", "label": "Blue gradient" },
-            { "value": "green", "label": "Green gradient" },
-            { "value": "red", "label": "Red gradient" },
-            { "value": "temperature", "label": "Temperature (blue-yellow-red)" },
-            { "value": "custom", "label": "Custom colors" }
+            {
+              "value": "blue",
+              "label": "Blue gradient"
+            },
+            {
+              "value": "green",
+              "label": "Green gradient"
+            },
+            {
+              "value": "red",
+              "label": "Red gradient"
+            },
+            {
+              "value": "temperature",
+              "label": "Temperature (blue-yellow-red)"
+            },
+            {
+              "value": "custom",
+              "label": "Custom colors"
+            }
           ]
         },
         {
