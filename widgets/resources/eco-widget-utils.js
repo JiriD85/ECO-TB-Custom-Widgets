@@ -31,12 +31,14 @@
         var settings = {};
         var container = null;
         var ctx = null;
+        var labelElement = null;  // Store reference to label element
 
         function init(twContainer, twSettings, widgetCtx) {
             container = twContainer;
             settings = twSettings || {};
             ctx = widgetCtx;
             state.currentDate = new Date();
+            labelElement = null;  // Reset label reference
         }
 
         function render() {
@@ -92,12 +94,11 @@
                 wrapper.appendChild(createNavButton('▶', function() { navigate(1); }));
             }
 
-            // Period label
-            var periodLabel = document.createElement('span');
-            periodLabel.id = 'tw-period-label';
-            periodLabel.style.cssText = 'color: white; font-size: 11px; margin-left: 8px; opacity: 0.9;';
-            periodLabel.textContent = formatPeriodLabel(state.mode, state.currentDate);
-            wrapper.appendChild(periodLabel);
+            // Period label - store reference for updates
+            labelElement = document.createElement('span');
+            labelElement.style.cssText = 'color: white; font-size: 11px; margin-left: 8px; opacity: 0.9;';
+            labelElement.textContent = formatPeriodLabel(state.mode, state.currentDate);
+            wrapper.appendChild(labelElement);
 
             container.appendChild(wrapper);
         }
@@ -326,9 +327,8 @@
         }
 
         function updateLabel() {
-            var labelEl = document.getElementById('tw-period-label');
-            if (labelEl) {
-                labelEl.textContent = formatPeriodLabel(state.mode, state.currentDate);
+            if (labelElement) {
+                labelElement.textContent = formatPeriodLabel(state.mode, state.currentDate);
             }
         }
 
@@ -706,22 +706,85 @@
 
             format = format || 'D MMM YYYY';
 
-            // Replace in order from most specific to least specific to avoid partial replacements
-            return format
-                .replace('YYYY', d.getFullYear())
-                .replace('YY', String(d.getFullYear()).slice(-2))
-                .replace('MMM', months[d.getMonth()])
-                .replace('MM', String(d.getMonth() + 1).padStart(2, '0'))
-                .replace(/(?<![DYM])M(?!M)/g, String(d.getMonth() + 1))  // M without leading zero
-                .replace('DD', String(d.getDate()).padStart(2, '0'))
-                .replace(/(?<![DYM])D(?!D)/g, String(d.getDate()));  // D without leading zero
+            // Use placeholders to avoid partial replacements
+            var result = format
+                .replace('YYYY', '{{YYYY}}')
+                .replace('YY', '{{YY}}')
+                .replace('MMM', '{{MMM}}')
+                .replace('MM', '{{MM}}')
+                .replace('DD', '{{DD}}');
+
+            // Now replace single D and M (only if not already replaced as DD/MM/MMM)
+            result = result
+                .replace(/D(?!D|\})/g, '{{D}}')
+                .replace(/M(?!M|\})/g, '{{M}}');
+
+            // Fill in actual values
+            return result
+                .replace('{{YYYY}}', d.getFullYear())
+                .replace('{{YY}}', String(d.getFullYear()).slice(-2))
+                .replace('{{MMM}}', months[d.getMonth()])
+                .replace('{{MM}}', String(d.getMonth() + 1).padStart(2, '0'))
+                .replace('{{M}}', String(d.getMonth() + 1))
+                .replace('{{DD}}', String(d.getDate()).padStart(2, '0'))
+                .replace('{{D}}', String(d.getDate()));
         }
     };
 
     // ========================================
+    // Zoom Sync Module
+    // ========================================
+    ECOWidgetUtils.zoomSync = (function() {
+        var listeners = {};
+        var currentZoom = { start: 0, end: 100 };
+        var broadcasterId = null;
+
+        function broadcast(widgetId, start, end) {
+            currentZoom = { start: start, end: end };
+            broadcasterId = widgetId;
+
+            // Notify all listeners except the broadcaster
+            Object.keys(listeners).forEach(function(id) {
+                if (id !== widgetId && listeners[id]) {
+                    try {
+                        listeners[id](start, end);
+                    } catch (e) {
+                        console.error('Zoom sync error:', e);
+                    }
+                }
+            });
+        }
+
+        function subscribe(widgetId, callback) {
+            listeners[widgetId] = callback;
+        }
+
+        function unsubscribe(widgetId) {
+            delete listeners[widgetId];
+        }
+
+        function getZoom() {
+            return currentZoom;
+        }
+
+        function reset() {
+            currentZoom = { start: 0, end: 100 };
+            broadcasterId = null;
+        }
+
+        return {
+            broadcast: broadcast,
+            subscribe: subscribe,
+            unsubscribe: unsubscribe,
+            getZoom: getZoom,
+            reset: reset
+        };
+    })();
+
+    // ========================================
     // Version Info
     // ========================================
-    ECOWidgetUtils.version = '1.0.0';
+    ECOWidgetUtils.version = '1.1.0';
 
     // Export to global scope
     global.ECOWidgetUtils = ECOWidgetUtils;
