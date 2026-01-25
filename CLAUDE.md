@@ -252,14 +252,11 @@ Add to widget resources (in widget JSON or ThingsBoard UI):
 ```json
 "resources": [
   { "url": "https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js" },
-  { "url": "https://gist.githubusercontent.com/JiriD85/1ad58c8b28bda388938173e534b4663d/raw/eco-widget-utils.js" }
+  { "url": "https://cdn.jsdelivr.net/gh/JiriD85/ECO-TB-Custom-Widgets@main/widgets/resources/eco-widget-utils.js" }
 ]
 ```
 
-**Note:** The library is hosted on GitHub Gist. To update, edit the gist or run:
-```bash
-gh gist edit 1ad58c8b28bda388938173e534b4663d widgets/resources/eco-widget-utils.js
-```
+**Note:** The library is served via jsDelivr CDN from the GitHub repo. After updating `widgets/resources/eco-widget-utils.js`, commit and push to GitHub - jsDelivr will automatically serve the new version.
 
 ### Available Modules
 
