@@ -232,9 +232,17 @@ class ThingsBoardApi {
 
   // ==================== Resources (JS Libraries) ====================
 
-  async getResources() {
-    const response = await this.request('GET', '/api/resource?pageSize=1000&page=0');
+  async getResources(resourceType = null) {
+    let path = '/api/resource?pageSize=1000&page=0';
+    if (resourceType) {
+      path += `&resourceType=${resourceType}`;
+    }
+    const response = await this.request('GET', path);
     return response.data || response || [];
+  }
+
+  async getJsModules() {
+    return this.getResources('JS_MODULE');
   }
 
   async getResourceByKey(resourceKey) {
@@ -242,62 +250,55 @@ class ThingsBoardApi {
     return resources.find(r => r.resourceKey === resourceKey) || null;
   }
 
-  async uploadResource(resourceKey, title, content, resourceType = 'JS_MODULE') {
+  async downloadResource(resourceId) {
     await this.ensureToken();
-
-    // Use native https to avoid charset issues with fetch
-    const https = require('https');
-    const http = require('http');
-    const { URL } = require('url');
-
-    const boundary = '----ECOWidgetUpload' + Date.now();
-
-    // Build multipart body
-    const parts = [
-      `--${boundary}\r\n`,
-      `Content-Disposition: form-data; name="file"; filename="${resourceKey}"\r\n`,
-      'Content-Type: application/javascript\r\n',
-      '\r\n',
-      content,
-      `\r\n--${boundary}--\r\n`
-    ];
-    const body = Buffer.from(parts.join(''), 'utf8');
-
-    const urlObj = new URL(`${this.baseUrl}/api/resource?resourceType=${resourceType}&title=${encodeURIComponent(title)}`);
-    const isHttps = urlObj.protocol === 'https:';
-    const lib = isHttps ? https : http;
-
-    return new Promise((resolve, reject) => {
-      const req = lib.request({
-        hostname: urlObj.hostname,
-        port: urlObj.port || (isHttps ? 443 : 80),
-        path: urlObj.pathname + urlObj.search,
-        method: 'POST',
-        headers: {
-          'X-Authorization': `Bearer ${this.token}`,
-          'Content-Type': `multipart/form-data; boundary=${boundary}`,
-          'Content-Length': body.length
-        }
-      }, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            try {
-              resolve(JSON.parse(data));
-            } catch (e) {
-              resolve(data);
-            }
-          } else {
-            reject(new Error(`Resource upload failed: ${res.statusCode} ${data}`));
-          }
-        });
-      });
-
-      req.on('error', reject);
-      req.write(body);
-      req.end();
+    const url = `${this.baseUrl}/api/resource/${resourceId}/download`;
+    const response = await fetchFn(url, {
+      method: 'GET',
+      headers: {
+        'X-Authorization': `Bearer ${this.token}`,
+      },
     });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Download failed: ${response.status} ${text}`);
+    }
+
+    return response.text();
+  }
+
+  async uploadResource(title, resourceType, resourceKey, data, existingId = null, resourceSubType = null) {
+    // ThingsBoard expects JSON with base64-encoded data
+    const base64Data = Buffer.from(data, 'utf8').toString('base64');
+
+    const resourcePayload = {
+      title: title,
+      resourceType: resourceType,
+      resourceKey: resourceKey,
+      fileName: resourceKey,
+      data: base64Data,
+    };
+
+    if (resourceSubType) {
+      resourcePayload.resourceSubType = resourceSubType;
+    }
+
+    if (existingId) {
+      resourcePayload.id = { id: existingId, entityType: 'TB_RESOURCE' };
+    }
+
+    return this.request('POST', '/api/resource', resourcePayload);
+  }
+
+  async uploadJsModule(title, resourceKey, jsContent, existingId = null) {
+    // JavaScript type 'MODULE' for plain JS reusable code
+    return this.uploadResource(title, 'JS_MODULE', resourceKey, jsContent, existingId, 'MODULE');
+  }
+
+  async uploadJsExtension(title, resourceKey, jsContent, existingId = null) {
+    // JavaScript type 'EXTENSION' for widget resources
+    return this.uploadResource(title, 'JS_MODULE', resourceKey, jsContent, existingId, 'EXTENSION');
   }
 
   async deleteResource(resourceId) {

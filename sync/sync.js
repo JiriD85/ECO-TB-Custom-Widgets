@@ -16,6 +16,7 @@ const {
 const SOURCE_DIRS = {
   bundles: 'widgets/bundles',
   types: 'widgets/types',
+  jslibraries: 'widgets/resources',
 };
 
 const logger = console;
@@ -24,6 +25,13 @@ async function readJsonFiles(dirPath) {
   const entries = await fs.readdir(dirPath, { withFileTypes: true });
   return entries
     .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+    .map((entry) => path.join(dirPath, entry.name));
+}
+
+async function readJsFiles(dirPath) {
+  const entries = await fs.readdir(dirPath, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.js'))
     .map((entry) => path.join(dirPath, entry.name));
 }
 
@@ -59,15 +67,31 @@ async function pathExists(testPath) {
 async function syncCommand(args) {
   const flags = new Set(args.filter((arg) => arg.startsWith('--')));
 
+  // Determine what to sync based on flags
+  const syncWidgets = flags.has('--widgets') || flags.size === 0;
+  const syncJs = flags.has('--js');
+
   // Collect files to sync and backup
   const filesToSync = [];
 
-  const bundleFiles = await getJsonFiles(SOURCE_DIRS.bundles);
-  const typeFiles = await getJsonFiles(SOURCE_DIRS.types);
-  filesToSync.push(...bundleFiles, ...typeFiles);
+  if (syncWidgets) {
+    const bundleFiles = await getJsonFiles(SOURCE_DIRS.bundles);
+    const typeFiles = await getJsonFiles(SOURCE_DIRS.types);
+    filesToSync.push(...bundleFiles, ...typeFiles);
+  }
+
+  if (syncJs) {
+    const jsDir = path.join(process.cwd(), SOURCE_DIRS.jslibraries);
+    try {
+      const jsFiles = await readJsFiles(jsDir);
+      filesToSync.push(...jsFiles);
+    } catch (err) {
+      // Directory might not exist
+    }
+  }
 
   if (filesToSync.length === 0) {
-    logger.warn('No widget files found to sync');
+    logger.warn('No files found to sync');
     return;
   }
 
@@ -78,11 +102,18 @@ async function syncCommand(args) {
   const api = new ThingsBoardApi({ ...config, logger });
   await api.login();
 
-  // Sync bundles first
-  await syncBundles(api);
+  if (syncWidgets) {
+    // Sync bundles first
+    await syncBundles(api);
 
-  // Then sync widget types
-  await syncWidgetTypes(api);
+    // Then sync widget types
+    await syncWidgetTypes(api);
+  }
+
+  if (syncJs) {
+    // Sync JS libraries
+    await syncJsModules(api);
+  }
 
   await recordSync();
   logger.log('Sync completed');
@@ -172,6 +203,10 @@ async function syncWidgetTypes(api) {
   }
   logger.log(`Found ${existingTypes.length} existing widget types`);
 
+  // Group widget types by bundle alias (extracted from FQN prefix)
+  const widgetsByBundle = new Map();
+  const syncedFqns = [];
+
   for (const file of files) {
     const payload = await loadJson(file);
     const fqn = payload.fqn;
@@ -180,6 +215,9 @@ async function syncWidgetTypes(api) {
       logger.error(`Widget type ${path.basename(file)} missing 'fqn' field`);
       continue;
     }
+
+    // Extract bundle alias from FQN (format: bundle_alias.widget_name)
+    const bundleAlias = fqn.includes('.') ? fqn.split('.')[0] : null;
 
     const existing = typesByFqn.get(fqn);
 
@@ -208,13 +246,127 @@ async function syncWidgetTypes(api) {
     try {
       await api.saveWidgetType(payload);
       logger.log(`Synced widget type: ${fqn}`);
+      syncedFqns.push(fqn);
+
+      // Track which bundle this widget belongs to
+      if (bundleAlias) {
+        if (!widgetsByBundle.has(bundleAlias)) {
+          widgetsByBundle.set(bundleAlias, []);
+        }
+        widgetsByBundle.get(bundleAlias).push(fqn);
+      }
     } catch (err) {
       logger.error(`Failed widget type sync (${fqn}): ${err.message}`);
+    }
+  }
+
+  // Add widget types to their respective bundles
+  if (widgetsByBundle.size > 0) {
+    logger.log('\nAdding widget types to bundles...');
+
+    // Get all bundles to find their IDs
+    const bundles = await api.getWidgetsBundles();
+    const bundlesByAlias = new Map();
+    for (const b of bundles) {
+      if (b.alias) {
+        bundlesByAlias.set(b.alias, b);
+      }
+    }
+
+    for (const [bundleAlias, fqns] of widgetsByBundle) {
+      const bundle = bundlesByAlias.get(bundleAlias);
+      if (!bundle) {
+        logger.warn(`Bundle not found for alias: ${bundleAlias}`);
+        continue;
+      }
+
+      try {
+        await api.addWidgetTypesToBundle(bundle.id.id, fqns);
+        logger.log(`Added ${fqns.length} widget type(s) to bundle '${bundleAlias}'`);
+      } catch (err) {
+        logger.error(`Failed to add widgets to bundle '${bundleAlias}': ${err.message}`);
+      }
+    }
+  }
+}
+
+// ==================== JS Library Sync ====================
+
+async function syncJsModules(api) {
+  const dirPath = path.join(process.cwd(), SOURCE_DIRS.jslibraries);
+  let files;
+  try {
+    files = await readJsFiles(dirPath);
+  } catch (err) {
+    logger.warn(`Skipping JS libraries: ${err.message}`);
+    return;
+  }
+
+  if (!files.length) {
+    logger.warn('No JS library files found');
+    return;
+  }
+
+  // Get existing JS modules from server
+  logger.log('Fetching existing JS modules from server...');
+  const existingModules = await api.getJsModules();
+
+  // Create lookup by resourceKey (filename)
+  const modulesByKey = new Map();
+  for (const m of existingModules) {
+    if (m.resourceKey) {
+      modulesByKey.set(m.resourceKey, m);
+    }
+  }
+  logger.log(`Found ${existingModules.length} existing JS modules`);
+
+  for (const file of files) {
+    const filename = path.basename(file);
+    const content = await fs.readFile(file, 'utf8');
+
+    // Title is filename without extension
+    const title = filename.replace(/\.js$/, '');
+    const resourceKey = filename;
+
+    const existing = modulesByKey.get(resourceKey);
+
+    try {
+      if (existing) {
+        logger.log(`Updating JS module: ${title} (ID: ${existing.id.id})`);
+        await api.uploadJsModule(title, resourceKey, content, existing.id.id);
+      } else {
+        logger.log(`Creating new JS module: ${title}`);
+        await api.uploadJsModule(title, resourceKey, content, null);
+      }
+      logger.log(`Synced JS module: ${filename}`);
+    } catch (err) {
+      logger.error(`Failed JS module sync (${filename}): ${err.message}`);
     }
   }
 }
 
 // ==================== List Commands ====================
+
+async function listJsCommand() {
+  const config = loadConfig();
+  const api = new ThingsBoardApi({ ...config, logger });
+  await api.login();
+
+  logger.log('Fetching JS modules from server...');
+  const modules = await api.getJsModules();
+
+  logger.log(`\nFound ${modules.length} JS modules:\n`);
+  for (const m of modules) {
+    const title = m.title || m.resourceKey;
+    const id = m.id.id;
+    const key = m.resourceKey || '';
+    const subType = m.resourceSubType || '';
+    logger.log(`  ${title}`);
+    logger.log(`    ID: ${id}`);
+    logger.log(`    Key: ${key}`);
+    logger.log(`    Type: ${subType}`);
+  }
+}
 
 async function listBundlesCommand() {
   const config = loadConfig();
@@ -327,6 +479,66 @@ async function pullBundleCommand(args) {
   logger.log(`\nPull completed: 1 bundle, ${widgetTypes.length} widget types`);
 }
 
+async function pullJsCommand(args) {
+  const config = loadConfig();
+  const api = new ThingsBoardApi({ ...config, logger });
+  await api.login();
+
+  logger.log('Fetching JS modules from server...');
+  const allModules = await api.getJsModules();
+
+  // Filter by names if provided
+  const names = args.filter((a) => !a.startsWith('--'));
+  let modulesToPull = [];
+
+  if (names.length === 0) {
+    // Pull all
+    modulesToPull = allModules;
+  } else {
+    // Pull specific modules by name (partial match)
+    for (const m of allModules) {
+      const title = (m.title || m.resourceKey || '').toLowerCase();
+      for (const search of names) {
+        if (title.includes(search.toLowerCase())) {
+          modulesToPull.push(m);
+          break;
+        }
+      }
+    }
+  }
+
+  if (modulesToPull.length === 0) {
+    logger.warn('No matching JS modules found');
+    return;
+  }
+
+  // Ensure js library directory exists
+  const jsDir = path.join(process.cwd(), SOURCE_DIRS.jslibraries);
+  await fs.mkdir(jsDir, { recursive: true });
+
+  for (const m of modulesToPull) {
+    const resourceId = m.id.id;
+    const filename = m.resourceKey || `${m.title}.js`;
+
+    try {
+      logger.log(`Downloading: ${filename}`);
+      const content = await api.downloadResource(resourceId);
+
+      const filePath = path.join(jsDir, filename);
+      await fs.writeFile(filePath, content);
+      logger.log(`Saved: ${filename}`);
+    } catch (err) {
+      logger.error(`Failed to download ${filename}: ${err.message}`);
+    }
+  }
+
+  // Update status
+  const { updateStatus } = require('./backup');
+  await updateStatus({ lastPull: new Date().toISOString().replace('T', '_').substring(0, 19) });
+
+  logger.log(`\nPull completed: ${modulesToPull.length} JS module(s)`);
+}
+
 // ==================== Backup Commands ====================
 
 async function backupCommand() {
@@ -359,19 +571,26 @@ function printUsage() {
   logger.log('Usage: node sync/sync.js <command> [options]');
   logger.log('');
   logger.log('Commands:');
-  logger.log('  sync                        Push local widgets to ThingsBoard');
+  logger.log('  sync [--widgets] [--js]     Push local resources to ThingsBoard');
+  logger.log('                              --widgets  Sync widget bundles and types (default)');
+  logger.log('                              --js       Sync JS libraries');
   logger.log('  list-bundles                List all widget bundles on server');
   logger.log('  list-widget-types [alias]   List widget types (optionally filter by bundle)');
+  logger.log('  list-js                     List JS libraries on server');
   logger.log('  pull-bundle <alias>         Download bundle + widget types from ThingsBoard');
+  logger.log('  pull-js [name...]           Download JS libraries (all or by name)');
   logger.log('  backup                      Create a backup of local files');
   logger.log('  rollback                    Restore from latest backup');
   logger.log('  status                      Show sync status');
   logger.log('');
   logger.log('Examples:');
   logger.log('  node sync/sync.js list-bundles');
+  logger.log('  node sync/sync.js list-js');
   logger.log('  node sync/sync.js list-widget-types eco_custom_widgets');
   logger.log('  node sync/sync.js pull-bundle eco_custom_widgets');
+  logger.log('  node sync/sync.js pull-js eco-widget-utils');
   logger.log('  node sync/sync.js sync');
+  logger.log('  node sync/sync.js sync --js');
 }
 
 // ==================== Main ====================
@@ -394,8 +613,14 @@ async function main() {
       case 'list-widget-types':
         await listWidgetTypesCommand(args);
         break;
+      case 'list-js':
+        await listJsCommand();
+        break;
       case 'pull-bundle':
         await pullBundleCommand(args);
+        break;
+      case 'pull-js':
+        await pullJsCommand(args);
         break;
       case 'backup':
         await backupCommand();
