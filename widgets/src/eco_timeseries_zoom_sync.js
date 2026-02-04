@@ -1027,6 +1027,48 @@ function showDatePicker(anchor, accentColor) {
 }
 
 // ========================================
+// ========================================
+// Get Timewindow Range for X-Axis Sync
+// ========================================
+function getTimewindowRange() {
+    var range = { min: null, max: null };
+
+    // Try to get from widget's timewindow first
+    if (self.ctx.timeWindow) {
+        var tw = self.ctx.timeWindow;
+        if (tw.minTime !== undefined && tw.maxTime !== undefined) {
+            range.min = tw.minTime;
+            range.max = tw.maxTime;
+            return range;
+        }
+    }
+
+    // Try dashboard timewindow
+    if (self.ctx.dashboard && self.ctx.dashboard.dashboardTimewindow) {
+        var dtw = self.ctx.dashboard.dashboardTimewindow;
+        if (dtw.history && dtw.history.fixedTimewindow) {
+            range.min = dtw.history.fixedTimewindow.startTimeMs;
+            range.max = dtw.history.fixedTimewindow.endTimeMs;
+            return range;
+        }
+        if (dtw.fixedTimewindow) {
+            range.min = dtw.fixedTimewindow.startTimeMs;
+            range.max = dtw.fixedTimewindow.endTimeMs;
+            return range;
+        }
+    }
+
+    // Fallback to custom timewindow state
+    if (twState.customStart && twState.customEnd) {
+        range.min = twState.customStart;
+        range.max = twState.customEnd;
+        return range;
+    }
+
+    return range;
+}
+
+// ========================================
 // Chart Update - Main Function
 // ========================================
 function updateChart() {
@@ -1171,12 +1213,15 @@ function updateChart() {
         allStats: allStatsForCard
     });
 
+    // Get timewindow range for X-axis synchronization
+    var timewindowRange = getTimewindowRange();
+
     // Build ECharts option based on display mode
     var option;
     if (displayMode === 'stacked' && seriesConfigs.length > 1) {
-        option = buildStackedOption(seriesConfigs, settings, chartType, smoothLine, showDataZoomSlider, showToolbox, toolboxFeatures, lineWidth, showArea, areaOpacity);
+        option = buildStackedOption(seriesConfigs, settings, chartType, smoothLine, showDataZoomSlider, showToolbox, toolboxFeatures, lineWidth, showArea, areaOpacity, timewindowRange);
     } else {
-        option = buildSingleOption(seriesConfigs, settings, chartType, smoothLine, showDataZoomSlider, showToolbox, toolboxFeatures, lineWidth, showArea, areaOpacity);
+        option = buildSingleOption(seriesConfigs, settings, chartType, smoothLine, showDataZoomSlider, showToolbox, toolboxFeatures, lineWidth, showArea, areaOpacity, timewindowRange);
     }
 
     // Ensure any leftover 'No valid data' title is cleared
@@ -1194,7 +1239,7 @@ function updateChart() {
 // ========================================
 // Single Chart Mode
 // ========================================
-function buildSingleOption(seriesConfigs, settings, chartType, smoothLine, showDataZoomSlider, showToolbox, toolboxFeatures, lineWidth, showArea, areaOpacity) {
+function buildSingleOption(seriesConfigs, settings, chartType, smoothLine, showDataZoomSlider, showToolbox, toolboxFeatures, lineWidth, showArea, areaOpacity, timewindowRange) {
     var series = seriesConfigs.map(function(sc) {
         var s = {
             name: sc.label,
@@ -1213,6 +1258,13 @@ function buildSingleOption(seriesConfigs, settings, chartType, smoothLine, showD
 
     var legendData = seriesConfigs.map(function(s) { return s.label; });
     var showClassicLegend = settings.showLegend && settings.legendStyle !== 'card';
+
+    // Build X-axis config with timewindow bounds for sync
+    var xAxisConfig = { type: 'time', axisLabel: { fontSize: 10 } };
+    if (timewindowRange && timewindowRange.min !== null && timewindowRange.max !== null) {
+        xAxisConfig.min = timewindowRange.min;
+        xAxisConfig.max = timewindowRange.max;
+    }
 
     return {
         tooltip: {
@@ -1235,7 +1287,7 @@ function buildSingleOption(seriesConfigs, settings, chartType, smoothLine, showD
         },
         legend: showClassicLegend ? { data: legendData, bottom: showDataZoomSlider ? 30 : 5 } : { show: false },
         grid: { left: 60, right: 20, top: 40, bottom: showDataZoomSlider ? 60 : 40 },
-        xAxis: { type: 'time', axisLabel: { fontSize: 10 } },
+        xAxis: xAxisConfig,
         yAxis: { type: 'value', axisLabel: { fontSize: 10 } },
         dataZoom: showDataZoomSlider ? [{ type: 'inside' }, { type: 'slider', bottom: 8, height: 20 }] : [{ type: 'inside' }],
         toolbox: showToolbox ? {
@@ -1253,7 +1305,7 @@ function buildSingleOption(seriesConfigs, settings, chartType, smoothLine, showD
 // ========================================
 // Stacked Charts Mode (Multi-Grid) - New Chart-Centric Configuration
 // ========================================
-function buildStackedOption(seriesConfigs, settings, chartType, smoothLine, showDataZoomSlider, showToolbox, toolboxFeatures, lineWidth, showArea, areaOpacity) {
+function buildStackedOption(seriesConfigs, settings, chartType, smoothLine, showDataZoomSlider, showToolbox, toolboxFeatures, lineWidth, showArea, areaOpacity, timewindowRange) {
     var charts = [];
     if (settings.chart1Enabled) charts.push({ chartNum: 1, title: settings.chart1Title || '', chartType: settings.chart1Type || 'line', heightPercent: settings.chart1Height || 0 });
     if (settings.chart2Enabled) charts.push({ chartNum: 2, title: settings.chart2Title || '', chartType: settings.chart2Type || 'line', heightPercent: settings.chart2Height || 0 });
@@ -1267,7 +1319,7 @@ function buildStackedOption(seriesConfigs, settings, chartType, smoothLine, show
 
     // If no charts defined, fall back to auto-mode (one chart per series)
     if (charts.length === 0) {
-        return buildAutoStackedOption(seriesConfigs, settings, chartType, smoothLine, showDataZoomSlider, showToolbox, toolboxFeatures, lineWidth, showArea, areaOpacity);
+        return buildAutoStackedOption(seriesConfigs, settings, chartType, smoothLine, showDataZoomSlider, showToolbox, toolboxFeatures, lineWidth, showArea, areaOpacity, timewindowRange);
     }
 
     // Build chart data structure
@@ -1477,15 +1529,20 @@ function buildStackedOption(seriesConfigs, settings, chartType, smoothLine, show
             height: (chartHeight - (chartTitle ? 2.5 : 0)) + '%'
         });
 
-        // X-Axis
-        xAxes.push({
+        // X-Axis with timewindow bounds for sync
+        var xAxisConfig = {
             type: 'time',
             gridIndex: gridIndex,
             axisLabel: { show: gridIndex === numCharts - 1, fontSize: 10 },
             axisTick: { show: gridIndex === numCharts - 1 },
             axisLine: { show: true },
             splitLine: { show: false }
-        });
+        };
+        if (timewindowRange && timewindowRange.min !== null && timewindowRange.max !== null) {
+            xAxisConfig.min = timewindowRange.min;
+            xAxisConfig.max = timewindowRange.max;
+        }
+        xAxes.push(xAxisConfig);
 
         // Y-Axes for this chart
         var chartYAxisStartIndex = yAxisCounter;
@@ -1658,7 +1715,7 @@ function autoAssignYAxis(seriesConfig, yAxesConfig) {
 }
 
 // Fallback: Auto-stacked mode (one chart per series, like old behavior)
-function buildAutoStackedOption(seriesConfigs, settings, chartType, smoothLine, showDataZoomSlider, showToolbox, toolboxFeatures, lineWidth, showArea, areaOpacity) {
+function buildAutoStackedOption(seriesConfigs, settings, chartType, smoothLine, showDataZoomSlider, showToolbox, toolboxFeatures, lineWidth, showArea, areaOpacity, timewindowRange) {
     var chartSpacing = settings.chartSpacing !== undefined ? settings.chartSpacing : 2;
     var topMargin = settings.chartTopMargin !== undefined ? settings.chartTopMargin : 5;
     var sliderAreaPercent = showDataZoomSlider ? 10 : 0;  // 10% for slider area (slider + x-axis labels)
@@ -1666,7 +1723,7 @@ function buildAutoStackedOption(seriesConfigs, settings, chartType, smoothLine, 
     var bottomMargin = chartGap + sliderAreaPercent;
 
     var numCharts = seriesConfigs.length;
-    if (numCharts === 0) return buildSingleOption(seriesConfigs, settings, chartType, smoothLine, showDataZoomSlider, showToolbox, toolboxFeatures, lineWidth, showArea, areaOpacity);
+    if (numCharts === 0) return buildSingleOption(seriesConfigs, settings, chartType, smoothLine, showDataZoomSlider, showToolbox, toolboxFeatures, lineWidth, showArea, areaOpacity, timewindowRange);
 
     var totalHeightPercent = 100 - topMargin - bottomMargin - (chartSpacing * (numCharts - 1));
     var chartHeight = totalHeightPercent / numCharts;
@@ -1684,13 +1741,19 @@ function buildAutoStackedOption(seriesConfigs, settings, chartType, smoothLine, 
             height: chartHeight + '%'
         });
 
-        xAxes.push({
+        // X-Axis with timewindow bounds for sync
+        var xAxisConfig = {
             type: 'time', gridIndex: i,
             axisLabel: { show: i === numCharts - 1, fontSize: 10 },
             axisTick: { show: i === numCharts - 1 },
             axisLine: { show: true },
             splitLine: { show: false }
-        });
+        };
+        if (timewindowRange && timewindowRange.min !== null && timewindowRange.max !== null) {
+            xAxisConfig.min = timewindowRange.min;
+            xAxisConfig.max = timewindowRange.max;
+        }
+        xAxes.push(xAxisConfig);
 
         yAxes.push({
             type: 'value', gridIndex: i,
