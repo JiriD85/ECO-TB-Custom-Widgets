@@ -162,9 +162,11 @@ function updateChart() {
     for (var i = 0; i < seriesData.length; i++) {
         var ts = seriesData[i][0];
         var val = seriesData[i][1];
-        if (val !== null && !isNaN(val)) {
+        // Convert to number (handles strings like "54.0")
+        var numVal = Number(val);
+        if (val !== null && val !== undefined && !isNaN(numVal) && isFinite(numVal)) {
             timestamps.push(ts);
-            rawValues.push(val);
+            rawValues.push(numVal);
         }
     }
 

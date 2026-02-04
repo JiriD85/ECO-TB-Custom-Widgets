@@ -165,6 +165,88 @@ var colorUtils = {
 };
 
 // ========================================
+// Utility Functions - Axis
+// ========================================
+var axisUtils = {
+    /**
+     * Calculate nice axis bounds (rounded to clean numbers like 0, 5, 10, 50, 100, etc.)
+     * @param {number} dataMin - Minimum data value
+     * @param {number} dataMax - Maximum data value
+     * @returns {object} { min, max } - Nice rounded bounds
+     */
+    niceAxisBounds: function(dataMin, dataMax) {
+        var range = dataMax - dataMin;
+
+        // Handle edge cases
+        if (range === 0) {
+            // All values are the same - create artificial range
+            if (dataMax === 0) return { min: 0, max: 1 };
+            var singleValue = Math.abs(dataMax);
+            var magnitude = Math.pow(10, Math.floor(Math.log10(singleValue)));
+            return {
+                min: Math.floor(dataMin / magnitude) * magnitude,
+                max: Math.ceil(dataMax / magnitude + 0.5) * magnitude
+            };
+        }
+
+        // Calculate order of magnitude for tick spacing
+        var exponent = Math.floor(Math.log10(range));
+        var magnitude = Math.pow(10, exponent);
+
+        // Normalized range (typically 1-10)
+        var normalized = range / magnitude;
+
+        // Choose nice tick interval based on normalized range
+        // This gives us ~4-8 ticks on the axis
+        var tickInterval;
+        if (normalized <= 1.5) tickInterval = 0.2 * magnitude;
+        else if (normalized <= 3) tickInterval = 0.5 * magnitude;
+        else if (normalized <= 6) tickInterval = 1 * magnitude;
+        else tickInterval = 2 * magnitude;
+
+        // Round min DOWN and max UP to nearest tick interval
+        var niceMin = Math.floor(dataMin / tickInterval) * tickInterval;
+        var niceMax = Math.ceil(dataMax / tickInterval) * tickInterval;
+
+        // Ensure there's at least one tick of padding
+        if (niceMin === dataMin) niceMin -= tickInterval;
+        if (niceMax === dataMax) niceMax += tickInterval;
+
+        // Round to avoid floating point artifacts (e.g., 0.30000000000000004)
+        var decimals = Math.max(0, -exponent + 1);
+        niceMin = Number(niceMin.toFixed(decimals));
+        niceMax = Number(niceMax.toFixed(decimals));
+
+        return { min: niceMin, max: niceMax };
+    }
+};
+
+// ========================================
+// Migration Helpers
+// ========================================
+function migrateSettings(settings) {
+    // Migrate old appearance settings to global
+    if (settings.axisLabelFontSize === undefined) {
+        settings.axisLabelFontSize = settings.yAxisLeftTitleFontSize || 11;
+    }
+    if (settings.axisLabelColor === undefined) {
+        settings.axisLabelColor = settings.yAxisLeftTitleColor || '#666666';
+    }
+    if (settings.axisTickFontSize === undefined) {
+        settings.axisTickFontSize = settings.yAxisLeftTicksFontSize || 10;
+    }
+    return settings;
+}
+
+function migrateDataKeySettings(dkSettings) {
+    // Migrate chartIndex (number) to chartsAssignment (array)
+    if (dkSettings.chartIndex !== undefined && !dkSettings.chartsAssignment) {
+        dkSettings.chartsAssignment = dkSettings.chartIndex > 0 ? [dkSettings.chartIndex] : [1];
+    }
+    return dkSettings;
+}
+
+// ========================================
 // Utility Functions - Formatting
 // ========================================
 var formatUtils = {
@@ -202,19 +284,19 @@ var formatUtils = {
         var shortMonths = monthsShort[lang] || monthsShort.en;
         var fullMonths = monthsFull[lang] || monthsFull.en;
         format = format || 'D MMM YYYY';
-        var result = format
-            .replace('YYYY', '{{YYYY}}').replace('YY', '{{YY}}')
-            .replace('MMMM', '{{MMMM}}').replace('MMM', '{{MMM}}').replace('MM', '{{MM}}').replace('DD', '{{DD}}');
-        result = result.replace(/D(?!D|\})/g, '{{D}}').replace(/M(?!M|\})/g, '{{M}}');
-        return result
-            .replace('{{YYYY}}', d.getFullYear())
-            .replace('{{YY}}', String(d.getFullYear()).slice(-2))
-            .replace('{{MMMM}}', fullMonths[d.getMonth()])
-            .replace('{{MMM}}', shortMonths[d.getMonth()])
-            .replace('{{MM}}', String(d.getMonth() + 1).padStart(2, '0'))
-            .replace('{{M}}', String(d.getMonth() + 1))
-            .replace('{{DD}}', String(d.getDate()).padStart(2, '0'))
-            .replace('{{D}}', String(d.getDate()));
+        var tokens = {
+            'YYYY': d.getFullYear(),
+            'YY': String(d.getFullYear()).slice(-2),
+            'MMMM': fullMonths[d.getMonth()],
+            'MMM': shortMonths[d.getMonth()],
+            'MM': String(d.getMonth() + 1).padStart(2, '0'),
+            'DD': String(d.getDate()).padStart(2, '0'),
+            'D': String(d.getDate()),
+            'M': String(d.getMonth() + 1)
+        };
+        return format.replace(/(YYYY|MMMM|MMM|MM|DD|YY|D|M)/g, function(match) {
+            return tokens[match] !== undefined ? tokens[match] : match;
+        });
     }
 };
 
@@ -416,7 +498,9 @@ self.onInit = function() {
     }
 };
 
-self.onDataUpdated = function() { updateChart(); };
+self.onDataUpdated = function() {
+    updateChart();
+};
 
 self.onResize = function() {
     if (chart && chartContainer) {
@@ -436,31 +520,88 @@ function fetchEntityAttributes(callback) {
     var settings = self.ctx.settings || {};
     var attributesToFetch = [];
     var settingsToCheck = [settings.twCustomStartTime, settings.twCustomEndTime];
+
     settingsToCheck.forEach(function(val) {
         if (val && typeof val === 'string') {
+            // Match ${attributeName} pattern
             var match = val.match(/^\$\{(.+)\}$/);
-            if (match && attributesToFetch.indexOf(match[1]) === -1) attributesToFetch.push(match[1]);
+            if (match && attributesToFetch.indexOf(match[1]) === -1) {
+                attributesToFetch.push(match[1]);
+            }
         }
     });
+
+    console.log('[TW Selector] Attributes to fetch:', attributesToFetch);
+
     if (attributesToFetch.length === 0) { callback(); return; }
-    if (!self.ctx.datasources || self.ctx.datasources.length === 0) { callback(); return; }
+    if (!self.ctx.datasources || self.ctx.datasources.length === 0) {
+        console.log('[TW Selector] No datasources available');
+        callback();
+        return;
+    }
+
     var ds = self.ctx.datasources[0];
-    if (!ds.entity || !ds.entity.id) { callback(); return; }
+    console.log('[TW Selector] Datasource entity:', ds.entity);
+
+    if (!ds.entity || !ds.entity.id) {
+        console.log('[TW Selector] No entity in datasource');
+        callback();
+        return;
+    }
+
     var entityId = ds.entity.id.id;
     var entityType = ds.entity.id.entityType;
     var keysParam = attributesToFetch.join(',');
-    var url = '/api/plugins/telemetry/' + entityType + '/' + entityId + '/values/attributes?keys=' + keysParam;
+
+    // Load both CLIENT_SCOPE and SERVER_SCOPE attributes
+    var loadedCount = 0;
+    var totalScopes = 2;
+
+    function checkComplete() {
+        loadedCount++;
+        if (loadedCount >= totalScopes) {
+            console.log('[TW Selector] All attributes loaded:', entityAttributes);
+            callback();
+        }
+    }
+
     if (self.ctx.http) {
-        self.ctx.http.get(url).subscribe(
+        // Load SERVER_SCOPE attributes (where startTimeMs typically is)
+        var serverUrl = '/api/plugins/telemetry/' + entityType + '/' + entityId + '/values/attributes/SERVER_SCOPE?keys=' + keysParam;
+        console.log('[TW Selector] Fetching SERVER_SCOPE:', serverUrl);
+        self.ctx.http.get(serverUrl).subscribe(
             function(response) {
+                console.log('[TW Selector] SERVER_SCOPE response:', response);
                 if (response && Array.isArray(response)) {
                     response.forEach(function(attr) { entityAttributes[attr.key] = attr.value; });
                 }
-                callback();
+                checkComplete();
             },
-            function(error) { console.warn('ECO Timeseries: Failed to fetch attributes', error); callback(); }
+            function(error) {
+                console.warn('[TW Selector] Failed to fetch SERVER_SCOPE attributes', error);
+                checkComplete();
+            }
         );
-    } else { callback(); }
+
+        // Also load CLIENT_SCOPE attributes as fallback
+        var clientUrl = '/api/plugins/telemetry/' + entityType + '/' + entityId + '/values/attributes/CLIENT_SCOPE?keys=' + keysParam;
+        self.ctx.http.get(clientUrl).subscribe(
+            function(response) {
+                if (response && Array.isArray(response)) {
+                    response.forEach(function(attr) {
+                        if (entityAttributes[attr.key] === undefined) {
+                            entityAttributes[attr.key] = attr.value;
+                        }
+                    });
+                }
+                checkComplete();
+            },
+            function(error) { checkComplete(); }
+        );
+    } else {
+        console.log('[TW Selector] No http service available');
+        callback();
+    }
 }
 
 // ========================================
@@ -470,7 +611,63 @@ function initTimewindowSelector() {
     var settings = self.ctx.settings || {};
     twState.mode = settings.twSelectorDefaultMode || 'custom';
     twState.currentDate = new Date();
-    if (settings.twCustomStartTime) applyTimewindow();
+
+    console.log('[TW Selector] Init - mode:', twState.mode, 'twCustomStartTime:', settings.twCustomStartTime);
+    console.log('[TW Selector] Entity attributes loaded:', entityAttributes);
+
+    // Initialize custom mode
+    if (twState.mode === 'custom') {
+        if (settings.twCustomStartTime) {
+            // twCustomStartTime is configured (e.g., ${EPI_3_1}) - resolve it now
+            var startMs = resolveTimeValue(settings.twCustomStartTime);
+            var endMs = settings.twCustomEndTime ? resolveTimeValue(settings.twCustomEndTime) : Date.now();
+
+            console.log('[TW Selector] Resolved from settings - startMs:', startMs, 'endMs:', endMs);
+
+            if (startMs && startMs > 0) {
+                twState.customStart = startMs;
+                // Use endMs only if it's a valid positive timestamp, otherwise use now
+                twState.customEnd = (endMs && endMs > 0) ? endMs : Date.now();
+            } else {
+                // Fallback to today if attribute not found
+                var today = new Date();
+                today.setHours(0, 0, 0, 0);
+                twState.customStart = today.getTime();
+                twState.customEnd = Date.now();
+            }
+        } else {
+            // No configured start time - use current timewindow or default to today
+            var useDashboardTw = self.ctx.widget && self.ctx.widget.config ? self.ctx.widget.config.useDashboardTimewindow !== false : true;
+            var tw = useDashboardTw
+                ? (self.ctx.dashboard && self.ctx.dashboard.dashboardTimewindow)
+                : self.ctx.timeWindow;
+            var now = Date.now();
+
+            console.log('[TW Selector] Reading timewindow from:', useDashboardTw ? 'dashboard' : 'widget', tw);
+
+            if (tw && tw.fixedTimewindow && tw.fixedTimewindow.startTimeMs) {
+                twState.customStart = tw.fixedTimewindow.startTimeMs;
+                twState.customEnd = tw.fixedTimewindow.endTimeMs || now;
+            } else if (tw && tw.history && tw.history.fixedTimewindow && tw.history.fixedTimewindow.startTimeMs) {
+                twState.customStart = tw.history.fixedTimewindow.startTimeMs;
+                twState.customEnd = tw.history.fixedTimewindow.endTimeMs || now;
+            } else {
+                // Default to current day (start of day to now)
+                var today = new Date();
+                today.setHours(0, 0, 0, 0);
+                twState.customStart = today.getTime();
+                twState.customEnd = now;
+            }
+        }
+
+        console.log('[TW Selector] twState after init:', {
+            customStart: twState.customStart ? new Date(twState.customStart).toISOString() : null,
+            customEnd: twState.customEnd ? new Date(twState.customEnd).toISOString() : null
+        });
+
+        // Apply the timewindow
+        applyTimewindow();
+    }
 }
 
 function renderTimewindowSelector() {
@@ -579,19 +776,34 @@ function navigate(direction) {
 }
 
 function applyTimewindow() {
-    var range = calculateRange();
-    if (!range) return;
     var settings = self.ctx.settings || {};
-    var timewindow = {
-        history: { fixedTimewindow: { startTimeMs: range.start, endTimeMs: range.end }, historyType: 0 },
-        aggregation: { type: settings.twAggregationType || 'NONE', limit: settings.twMaxDataPoints || 100000 }
-    };
-    var useDashboardTw = self.ctx.widget && self.ctx.widget.config ? self.ctx.widget.config.useDashboardTimewindow : true;
-    if (useDashboardTw !== false) {
-        if (self.ctx.dashboard && self.ctx.dashboard.updateDashboardTimewindow) self.ctx.dashboard.updateDashboardTimewindow(timewindow);
-        else if (self.ctx.dashboard && self.ctx.dashboard.onUpdateTimewindow) self.ctx.dashboard.onUpdateTimewindow(range.start, range.end);
-    } else {
-        if (self.ctx.timewindowFunctions && self.ctx.timewindowFunctions.onUpdateTimewindow) self.ctx.timewindowFunctions.onUpdateTimewindow(range.start, range.end);
+
+    // Calculate the range
+    var range = calculateRange();
+    if (!range) {
+        console.log('[TW Selector] No range calculated');
+        return;
+    }
+
+    console.log('[TW Selector] Applying widget timewindow:', {
+        mode: twState.mode,
+        start: new Date(range.start).toISOString(),
+        end: new Date(range.end).toISOString()
+    });
+
+    // Update widget's timewindow - wrap in $$postDigest to avoid digest cycle conflict
+    if (self.ctx.timewindowFunctions && self.ctx.timewindowFunctions.onUpdateTimewindow) {
+        if (self.ctx.$scope && self.ctx.$scope.$$postDigest) {
+            self.ctx.$scope.$$postDigest(function() {
+                self.ctx.timewindowFunctions.onUpdateTimewindow(range.start, range.end);
+                console.log('[TW Selector] Widget timewindow updated via $$postDigest');
+            });
+        } else {
+            setTimeout(function() {
+                self.ctx.timewindowFunctions.onUpdateTimewindow(range.start, range.end);
+                console.log('[TW Selector] Widget timewindow updated via setTimeout');
+            }, 0);
+        }
     }
 }
 
@@ -619,33 +831,58 @@ function calculateRange() {
             end = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
             break;
         case 'custom':
-            if (twState.customStart && twState.customEnd) return { start: twState.customStart, end: twState.customEnd };
+            if (twState.customStart && twState.customEnd) {
+                return { start: twState.customStart, end: twState.customEnd };
+            }
+            // Fallback: try to resolve from settings if twState not set
             if (settings.twCustomStartTime) {
                 var startMs = resolveTimeValue(settings.twCustomStartTime);
                 var endMs = settings.twCustomEndTime ? resolveTimeValue(settings.twCustomEndTime) : Date.now();
                 if (startMs) return { start: startMs, end: endMs || Date.now() };
             }
-            return null;
+            // Last fallback: current day
+            var today = new Date();
+            today.setHours(0, 0, 0, 0);
+            return { start: today.getTime(), end: Date.now() };
     }
     return { start: start.getTime(), end: end.getTime() };
 }
 
 function resolveTimeValue(valueStr) {
     if (!valueStr || valueStr === '') return null;
+
+    // Match ${attributeName} pattern
     var varMatch = valueStr.match(/^\$\{(.+)\}$/);
+    console.log('[TW Selector] resolveTimeValue:', valueStr, 'match:', varMatch);
+
     if (varMatch) {
         var attrName = varMatch[1];
-        if (entityAttributes[attrName] !== undefined) return Number(entityAttributes[attrName]);
+        console.log('[TW Selector] Looking for attribute:', attrName, 'in entityAttributes:', entityAttributes);
+
+        if (entityAttributes[attrName] !== undefined) {
+            var val = Number(entityAttributes[attrName]);
+            console.log('[TW Selector] Found in entityAttributes:', entityAttributes[attrName], '-> parsed:', val);
+            if (!isNaN(val) && val > 0) return val;
+        }
         if (self.ctx.datasources && self.ctx.datasources[0]) {
             var ds = self.ctx.datasources[0];
-            if (ds.entity && ds.entity.attributes && ds.entity.attributes[attrName] !== undefined) return Number(ds.entity.attributes[attrName]);
+            if (ds.entity && ds.entity.attributes && ds.entity.attributes[attrName] !== undefined) {
+                var val2 = Number(ds.entity.attributes[attrName]);
+                console.log('[TW Selector] Found in ds.entity.attributes:', ds.entity.attributes[attrName], '-> parsed:', val2);
+                if (!isNaN(val2) && val2 > 0) return val2;
+            }
         }
         if (self.ctx.latestData) {
             for (var i = 0; i < self.ctx.latestData.length; i++) {
                 var ld = self.ctx.latestData[i];
-                if (ld.dataKey && ld.dataKey.name === attrName && ld.data && ld.data.length > 0) return Number(ld.data[ld.data.length - 1][1]);
+                if (ld.dataKey && ld.dataKey.name === attrName && ld.data && ld.data.length > 0) {
+                    var val3 = Number(ld.data[ld.data.length - 1][1]);
+                    console.log('[TW Selector] Found in latestData:', ld.data[ld.data.length - 1][1], '-> parsed:', val3);
+                    if (!isNaN(val3) && val3 > 0) return val3;
+                }
             }
         }
+        console.log('[TW Selector] Attribute not found:', attrName);
         return null;
     }
     var numVal = Number(valueStr);
@@ -795,7 +1032,16 @@ function showDatePicker(anchor, accentColor) {
 function updateChart() {
     if (!chart) return;
 
-    var settings = self.ctx.settings || {};
+    // ALWAYS clear stats cards at start - ensures clean state
+    ['top', 'bottom', 'left', 'right'].forEach(function(pos) {
+        var container = statsCardContainers[pos];
+        if (container) {
+            container.style.display = 'none';
+            while (container.firstChild) container.removeChild(container.firstChild);
+        }
+    });
+
+    var settings = migrateSettings(self.ctx.settings || {});
     var data = self.ctx.data || [];
 
     renderTimewindowSelector();
@@ -819,6 +1065,7 @@ function updateChart() {
 
     if (!data.length) { showNoData('No data available'); return; }
 
+
     // Process all series
     var seriesConfigs = [];
     var allStatsForCard = [];
@@ -826,7 +1073,10 @@ function updateChart() {
 
     for (var i = 0; i < data.length; i++) {
         var ds = data[i];
-        if (!ds.data || !ds.data.length) continue;
+        var dsLabel = (ds.dataKey && ds.dataKey.label) || 'ds' + i;
+        if (!ds.data || !ds.data.length) {
+            continue;
+        }
 
         var dataKey = ds.dataKey || {};
         var label = dataKey.label || dataKey.name || 'Series ' + (i + 1);
@@ -839,9 +1089,11 @@ function updateChart() {
         for (var j = 0; j < ds.data.length; j++) {
             var ts = ds.data[j][0];
             var val = ds.data[j][1];
-            if (val !== null && !isNaN(val)) {
+            // Convert to number (handles strings like "54.0")
+            var numVal = Number(val);
+            if (val !== null && val !== undefined && !isNaN(numVal) && isFinite(numVal)) {
                 timestamps.push(ts);
-                values.push(val);
+                values.push(numVal);
             }
         }
 
@@ -874,8 +1126,11 @@ function updateChart() {
         stats.lastTimestamp = timestamps.length > 0 ? timestamps[timestamps.length - 1] : null;
 
         // Get chart assignments and Y-axis settings from data key settings
-        var chartAssignments = (dataKey.settings && dataKey.settings.chartAssignments) || [];
-        var yAxisIndex = (dataKey.settings && dataKey.settings.yAxisIndex) || 0;
+        var dkSettings = migrateDataKeySettings(dataKey.settings || {});
+        var chartIndex = dkSettings.chartIndex || 0;
+        var chartsAssignment = dkSettings.chartsAssignment || (chartIndex > 0 ? [chartIndex] : [1]);
+        var yAxisMin = dkSettings.yAxisMin;
+        var yAxisMax = dkSettings.yAxisMax;
 
         seriesConfigs.push({
             label: label,
@@ -884,8 +1139,10 @@ function updateChart() {
             decimals: decimals,
             data: seriesData,
             stats: stats,
-            chartAssignments: chartAssignments,
-            yAxisIndex: yAxisIndex
+            chartIndex: chartIndex,
+            chartsAssignment: chartsAssignment,
+            yAxisMin: yAxisMin,
+            yAxisMax: yAxisMax
         });
 
         allStatsForCard.push({
@@ -898,6 +1155,7 @@ function updateChart() {
     }
 
     if (seriesConfigs.length === 0) { showNoData('No valid data'); return; }
+
 
     // Render stats card
     renderStatsCard({
@@ -920,6 +1178,9 @@ function updateChart() {
     } else {
         option = buildSingleOption(seriesConfigs, settings, chartType, smoothLine, showDataZoomSlider, showToolbox, toolboxFeatures, lineWidth, showArea, areaOpacity);
     }
+
+    // Ensure any leftover 'No valid data' title is cleared
+    if (!option.title) option.title = { show: false };
 
     chart.setOption(option, true);
 
@@ -976,7 +1237,7 @@ function buildSingleOption(seriesConfigs, settings, chartType, smoothLine, showD
         grid: { left: 60, right: 20, top: 40, bottom: showDataZoomSlider ? 60 : 40 },
         xAxis: { type: 'time', axisLabel: { fontSize: 10 } },
         yAxis: { type: 'value', axisLabel: { fontSize: 10 } },
-        dataZoom: showDataZoomSlider ? [{ type: 'inside' }, { type: 'slider', bottom: 5, height: 20 }] : [{ type: 'inside' }],
+        dataZoom: showDataZoomSlider ? [{ type: 'inside' }, { type: 'slider', bottom: 8, height: 20 }] : [{ type: 'inside' }],
         toolbox: showToolbox ? {
             show: true, right: 10, top: 5,
             feature: {
@@ -993,10 +1254,14 @@ function buildSingleOption(seriesConfigs, settings, chartType, smoothLine, showD
 // Stacked Charts Mode (Multi-Grid) - New Chart-Centric Configuration
 // ========================================
 function buildStackedOption(seriesConfigs, settings, chartType, smoothLine, showDataZoomSlider, showToolbox, toolboxFeatures, lineWidth, showArea, areaOpacity) {
-    var charts = settings.charts || [];
+    var charts = [];
+    if (settings.chart1Enabled) charts.push({ chartNum: 1, title: settings.chart1Title || '', chartType: settings.chart1Type || 'line', heightPercent: settings.chart1Height || 0 });
+    if (settings.chart2Enabled) charts.push({ chartNum: 2, title: settings.chart2Title || '', chartType: settings.chart2Type || 'line', heightPercent: settings.chart2Height || 0 });
+    if (settings.chart3Enabled) charts.push({ chartNum: 3, title: settings.chart3Title || '', chartType: settings.chart3Type || 'line', heightPercent: settings.chart3Height || 0 });
+    if (settings.chart4Enabled) charts.push({ chartNum: 4, title: settings.chart4Title || '', chartType: settings.chart4Type || 'line', heightPercent: settings.chart4Height || 0 });
     var chartSpacing = settings.chartSpacing !== undefined ? settings.chartSpacing : 2;
     var topMargin = settings.chartTopMargin !== undefined ? settings.chartTopMargin : 5;
-    var sliderAreaPercent = showDataZoomSlider ? 8 : 0;
+    var sliderAreaPercent = showDataZoomSlider ? 10 : 0;  // 10% for slider area (slider + x-axis labels)
     var chartGap = settings.chartBottomMargin !== undefined ? settings.chartBottomMargin : 3;
     var bottomMargin = chartGap + sliderAreaPercent;
 
@@ -1009,76 +1274,89 @@ function buildStackedOption(seriesConfigs, settings, chartType, smoothLine, show
     var chartDataList = [];
 
     charts.forEach(function(chartConfig, chartIndex) {
-        var chartNum = chartIndex + 1; // 1-based chart number
+        var chartNum = chartConfig.chartNum; // Use stored chartNum from fixed slot
 
-        // Find series assigned to this chart
+        // Find series assigned to this chart (support both old chartIndex and new chartsAssignment)
         var assignedSeries = seriesConfigs.filter(function(sc) {
-            var assignments = sc.chartAssignments || [];
-            return assignments.indexOf(chartNum) !== -1;
+            // Check chartsAssignment array first
+            if (sc.chartsAssignment && Array.isArray(sc.chartsAssignment) && sc.chartsAssignment.length > 0) {
+                return sc.chartsAssignment.indexOf(chartNum) !== -1;
+            }
+            // Fall back to old chartIndex for backward compatibility
+            if (sc.chartIndex !== undefined && sc.chartIndex > 0) {
+                return sc.chartIndex === chartNum;
+            }
+            // Default: assign to Chart 1
+            return chartNum === 1;
         });
 
         if (assignedSeries.length === 0) return; // Skip empty charts
 
-        // Build Y-axes configuration for this chart
-        var yAxesConfig = [];
-
-        // Y-Axis 1 (always exists)
-        yAxesConfig.push({
-            position: 'left',
-            label: chartConfig.yAxis1Label || '',
-            unit: chartConfig.yAxis1Unit || '',
-            min: chartConfig.yAxis1Min,
-            max: chartConfig.yAxis1Max,
-            series: []
+        // Auto-create Y-axes based on units
+        var unitGroups = {};
+        assignedSeries.forEach(function(sc) {
+            var unit = (sc.units || '').trim();
+            if (!unitGroups[unit]) unitGroups[unit] = [];
+            unitGroups[unit].push(sc);
         });
 
-        // Y-Axis 2-4 (optional)
-        if (chartConfig.yAxis2Enabled) {
-            yAxesConfig.push({
-                position: 'right',
-                label: chartConfig.yAxis2Label || '',
-                unit: chartConfig.yAxis2Unit || '',
-                min: chartConfig.yAxis2Min,
-                max: chartConfig.yAxis2Max,
-                series: []
-            });
-        }
-        if (chartConfig.yAxis3Enabled) {
-            yAxesConfig.push({
-                position: 'left',
-                offset: 60,
-                label: chartConfig.yAxis3Label || '',
-                unit: chartConfig.yAxis3Unit || '',
-                min: chartConfig.yAxis3Min,
-                max: chartConfig.yAxis3Max,
-                series: []
-            });
-        }
-        if (chartConfig.yAxis4Enabled) {
-            yAxesConfig.push({
-                position: 'right',
-                offset: 60,
-                label: chartConfig.yAxis4Label || '',
-                unit: chartConfig.yAxis4Unit || '',
-                min: chartConfig.yAxis4Min,
-                max: chartConfig.yAxis4Max,
-                series: []
-            });
-        }
+        var unitKeys = Object.keys(unitGroups);
+        var yAxesConfig = [];
 
-        // Assign series to Y-axes (auto or manual)
-        assignedSeries.forEach(function(sc) {
-            var yAxisIdx = sc.yAxisIndex || 0; // 0 = auto
+        unitKeys.forEach(function(unit, unitIndex) {
+            var axisSeries = unitGroups[unit];
+            var position = unitIndex === 0 ? 'left' : 'right';
 
-            if (yAxisIdx === 0) {
-                // Auto-assign based on unit matching
-                yAxisIdx = autoAssignYAxis(sc, yAxesConfig);
-            } else {
-                // Manual assignment (1-based to 0-based)
-                yAxisIdx = Math.min(yAxisIdx - 1, yAxesConfig.length - 1);
+            // Combine labels (comma-separated to avoid ECharts truncation)
+            var labels = axisSeries.map(function(sc) { return sc.label; });
+            var combinedLabel = labels.join(', ');
+
+            // Calculate auto min/max from series data with padding
+            var allValues = [];
+            var hasMinOverride = false, hasMaxOverride = false;
+            var minOverride, maxOverride;
+            axisSeries.forEach(function(sc) {
+                sc.data.forEach(function(d) { if (d[1] !== null) allValues.push(d[1]); });
+                if (sc.yAxisMin !== undefined && sc.yAxisMin !== null && sc.yAxisMin !== '') {
+                    hasMinOverride = true;
+                    minOverride = minOverride !== undefined ? Math.min(minOverride, sc.yAxisMin) : sc.yAxisMin;
+                }
+                if (sc.yAxisMax !== undefined && sc.yAxisMax !== null && sc.yAxisMax !== '') {
+                    hasMaxOverride = true;
+                    maxOverride = maxOverride !== undefined ? Math.max(maxOverride, sc.yAxisMax) : sc.yAxisMax;
+                }
+            });
+
+            // Auto-scale: calculate nice axis bounds (rounded to clean numbers)
+            var autoMin, autoMax;
+            if (allValues.length > 0) {
+                // Use loop instead of Math.min/max.apply to avoid stack overflow with large arrays
+                var dataMin = allValues[0];
+                var dataMax = allValues[0];
+                for (var vi = 1; vi < allValues.length; vi++) {
+                    if (allValues[vi] < dataMin) dataMin = allValues[vi];
+                    if (allValues[vi] > dataMax) dataMax = allValues[vi];
+                }
+                // Calculate nice rounded axis bounds
+                var niceBounds = axisUtils.niceAxisBounds(dataMin, dataMax);
+                autoMin = niceBounds.min;
+                autoMax = niceBounds.max;
             }
 
-            yAxesConfig[yAxisIdx].series.push(sc);
+            yAxesConfig.push({
+                position: position,
+                // Note: label is built dynamically from series in Y-axis rendering
+                labelFontSize: settings.axisLabelFontSize || 11,
+                labelOpacity: 1,
+                tickFontSize: settings.axisTickFontSize || 10,
+                tickOpacity: 1,
+                tickColor: settings.axisLabelColor || '#666',
+                labelColor: settings.axisLabelColor || '#666',
+                unit: unit,
+                min: hasMinOverride ? minOverride : autoMin,
+                max: hasMaxOverride ? maxOverride : autoMax,
+                series: axisSeries
+            });
         });
 
         chartDataList.push({
@@ -1093,6 +1371,48 @@ function buildStackedOption(seriesConfigs, settings, chartType, smoothLine, show
     }
 
     var numCharts = chartDataList.length;
+
+    // Calculate uniform grid margins across all charts
+    // This ensures all charts have the same data area width regardless of Y-axis count
+    var maxLeftAxes = 0;
+    var maxRightAxes = 0;
+    var maxLeftLabelLines = 1;  // Max number of label lines on left Y-axis
+    var maxRightLabelLines = 1; // Max number of label lines on right Y-axis
+    var anyChartHasRightAxis = false;
+
+    chartDataList.forEach(function(cd) {
+        var chartNum = cd.config.chartNum;
+        var yAxesWithData = cd.yAxes.filter(function(ya) { return ya.series.length > 0; });
+        var leftAxes = yAxesWithData.filter(function(ya) { return ya.position === 'left'; });
+        var rightAxes = yAxesWithData.filter(function(ya) { return ya.position === 'right'; });
+
+        if (leftAxes.length > maxLeftAxes) maxLeftAxes = leftAxes.length;
+        if (rightAxes.length > maxRightAxes) maxRightAxes = rightAxes.length;
+        if (rightAxes.length > 0) anyChartHasRightAxis = true;
+
+        // Count label lines - check if manual title is set (single line) or auto (multi-line)
+        leftAxes.forEach(function(ya) {
+            var manualTitle = settings['chart' + chartNum + 'YAxisLeftTitle'];
+            var lineCount = (manualTitle && manualTitle.trim() !== '') ? 1 : ya.series.length;
+            if (lineCount > maxLeftLabelLines) maxLeftLabelLines = lineCount;
+        });
+        rightAxes.forEach(function(ya) {
+            var manualTitle = settings['chart' + chartNum + 'YAxisRightTitle'];
+            var lineCount = (manualTitle && manualTitle.trim() !== '') ? 1 : ya.series.length;
+            if (lineCount > maxRightLabelLines) maxRightLabelLines = lineCount;
+        });
+    });
+
+    // Fixed nameGap of 35px - labels handle their own positioning
+    var baseNameGap = 35;
+
+    // Extra space for multi-line labels (rotated text: each line adds ~14px horizontal space)
+    var leftLabelExtra = (maxLeftLabelLines - 1) * 14;
+    var rightLabelExtra = (maxRightLabelLines - 1) * 14;
+
+    // Total margin: tick labels (25px) + nameGap (35px) + extra for label lines + extra for multiple axes
+    var uniformGridLeft = 25 + baseNameGap + leftLabelExtra + (maxLeftAxes > 1 ? (maxLeftAxes - 1) * 50 : 0);
+    var uniformGridRight = 20 + (anyChartHasRightAxis ? baseNameGap + rightLabelExtra : 0) + (maxRightAxes > 1 ? (maxRightAxes - 1) * 50 : 0);
 
     // Calculate chart heights
     var totalHeightPercent = 100 - topMargin - bottomMargin - (chartSpacing * (numCharts - 1));
@@ -1130,23 +1450,29 @@ function buildStackedOption(seriesConfigs, settings, chartType, smoothLine, show
         var yAxesWithData = chartData.yAxes.filter(function(ya) { return ya.series.length > 0; });
         var hasRightAxis = yAxesWithData.some(function(ya) { return ya.position === 'right'; });
 
-        // Add title
+        // Calculate max lines in left Y-axis for title positioning
+        var maxLeftAxisLines = 1;
+        yAxesWithData.filter(function(ya) { return ya.position === 'left'; }).forEach(function(ya) {
+            if (ya.series.length > maxLeftAxisLines) maxLeftAxisLines = ya.series.length;
+        });
+
+        // Dynamic title left position: base + extra space for multi-line labels
+        var titleLeftPos = uniformGridLeft + 5;
+
+        // Add title with custom styling
         if (chartTitle) {
             titles.push({
                 text: chartTitle,
-                left: 65,
+                left: titleLeftPos,
                 top: currentTop + '%',
-                textStyle: { fontSize: 11, fontWeight: 'normal', color: '#666' }
+                textStyle: { fontSize: settings.chartTitleFontSize || 12, color: settings.chartTitleColor || '#666666', opacity: settings.chartTitleOpacity !== undefined ? settings.chartTitleOpacity : 1 }
             });
         }
 
-        // Grid - adjust for multiple Y-axes
-        var gridLeft = 60 + (yAxesWithData.filter(function(ya) { return ya.position === 'left' && ya.offset; }).length * 50);
-        var gridRight = 20 + (hasRightAxis ? 40 : 0) + (yAxesWithData.filter(function(ya) { return ya.position === 'right' && ya.offset; }).length * 50);
-
+        // Grid - use uniform margins for consistent data area width across all charts
         grids.push({
-            left: gridLeft,
-            right: gridRight,
+            left: uniformGridLeft,
+            right: uniformGridRight,
             top: (currentTop + (chartTitle ? 2.5 : 0)) + '%',
             height: (chartHeight - (chartTitle ? 2.5 : 0)) + '%'
         });
@@ -1165,20 +1491,53 @@ function buildStackedOption(seriesConfigs, settings, chartType, smoothLine, show
         var chartYAxisStartIndex = yAxisCounter;
 
         yAxesWithData.forEach(function(yAxisConfig, localYAxisIndex) {
-            var axisName = yAxisConfig.label || (yAxisConfig.series.length > 0
-                ? yAxisConfig.series.map(function(s) { return s.label; }).join(', ')
-                : '');
-            if (axisName.length > 25) axisName = axisName.substring(0, 22) + '...';
+            // Check for manual Y-axis title and gap override
+            var chartNum = config.chartNum;
+            var positionSuffix = yAxisConfig.position === 'left' ? 'Left' : 'Right';
+            var manualTitleKey = 'chart' + chartNum + 'YAxis' + positionSuffix + 'Title';
+            var manualGapKey = 'chart' + chartNum + 'YAxis' + positionSuffix + 'Gap';
+            var manualTitle = settings[manualTitleKey];
+            var manualGap = settings[manualGapKey];
+
+            var axisName;
+            var lineCount = 1;
+
+            if (manualTitle && manualTitle.trim() !== '') {
+                // Use manual title (single line)
+                axisName = manualTitle.trim();
+            } else {
+                // Auto-generate from series labels: each series with its own unit, line break only for 2+ series
+                var seriesLabelsWithUnits = yAxisConfig.series.map(function(s) {
+                    if (!s.label) return '';
+                    return s.label + (s.units ? ' (' + s.units + ')' : '');
+                }).filter(function(label) {
+                    return label && label.trim() !== '';
+                });
+                lineCount = seriesLabelsWithUnits.length || 1;
+
+                // Join series labels - line break for multiple series, single line for one
+                if (seriesLabelsWithUnits.length > 1) {
+                    axisName = seriesLabelsWithUnits.join('\n');
+                } else {
+                    axisName = seriesLabelsWithUnits[0] || '';
+                }
+
+                // Remove any double newlines that might have been created
+                axisName = axisName.replace(/\n\n+/g, '\n');
+            }
+
+            // Use manual gap if set, otherwise fixed base of 35px
+            var dynamicNameGap = (manualGap && manualGap > 0) ? manualGap : 35;
 
             var yAxis = {
                 type: 'value',
                 gridIndex: gridIndex,
                 position: yAxisConfig.position,
-                name: axisName + (yAxisConfig.unit ? ' (' + yAxisConfig.unit + ')' : ''),
+                name: axisName,
                 nameLocation: 'middle',
-                nameGap: 40,
-                nameTextStyle: { fontSize: 9, color: yAxisConfig.series[0] ? yAxisConfig.series[0].color : '#666' },
-                axisLabel: { fontSize: 9 },
+                nameGap: dynamicNameGap,
+                nameTextStyle: { fontSize: yAxisConfig.labelFontSize || 11, color: yAxisConfig.labelColor || '#666', opacity: yAxisConfig.labelOpacity !== undefined ? yAxisConfig.labelOpacity : 1 },
+                axisLabel: { fontSize: yAxisConfig.tickFontSize || 11, color: yAxisConfig.tickColor || '#666', opacity: yAxisConfig.tickOpacity !== undefined ? yAxisConfig.tickOpacity : 1 },
                 splitLine: { show: localYAxisIndex === 0, lineStyle: { type: 'dashed', opacity: 0.3 } }
             };
 
@@ -1221,7 +1580,7 @@ function buildStackedOption(seriesConfigs, settings, chartType, smoothLine, show
 
     var dataZoom = [{ type: 'inside', xAxisIndex: xAxisIndices }];
     if (showDataZoomSlider) {
-        dataZoom.push({ type: 'slider', xAxisIndex: xAxisIndices, bottom: 5, height: 18 });
+        dataZoom.push({ type: 'slider', xAxisIndex: xAxisIndices, bottom: 8, height: 20 });
     }
 
     var option = {
@@ -1302,7 +1661,7 @@ function autoAssignYAxis(seriesConfig, yAxesConfig) {
 function buildAutoStackedOption(seriesConfigs, settings, chartType, smoothLine, showDataZoomSlider, showToolbox, toolboxFeatures, lineWidth, showArea, areaOpacity) {
     var chartSpacing = settings.chartSpacing !== undefined ? settings.chartSpacing : 2;
     var topMargin = settings.chartTopMargin !== undefined ? settings.chartTopMargin : 5;
-    var sliderAreaPercent = showDataZoomSlider ? 8 : 0;
+    var sliderAreaPercent = showDataZoomSlider ? 10 : 0;  // 10% for slider area (slider + x-axis labels)
     var chartGap = settings.chartBottomMargin !== undefined ? settings.chartBottomMargin : 3;
     var bottomMargin = chartGap + sliderAreaPercent;
 
@@ -1366,7 +1725,7 @@ function buildAutoStackedOption(seriesConfigs, settings, chartType, smoothLine, 
 
     var dataZoom = [{ type: 'inside', xAxisIndex: xAxisIndices }];
     if (showDataZoomSlider) {
-        dataZoom.push({ type: 'slider', xAxisIndex: xAxisIndices, bottom: 5, height: 18 });
+        dataZoom.push({ type: 'slider', xAxisIndex: xAxisIndices, bottom: 8, height: 20 });
     }
 
     return {
@@ -1408,6 +1767,14 @@ function buildAutoStackedOption(seriesConfigs, settings, chartType, smoothLine, 
 
 function showNoData(msg) {
     if (!chart) return;
+    // Clear stats cards when showing no data
+    ['top', 'bottom', 'left', 'right'].forEach(function(pos) {
+        var container = statsCardContainers[pos];
+        if (container) {
+            container.style.display = 'none';
+            while (container.firstChild) container.removeChild(container.firstChild);
+        }
+    });
     chart.setOption({
         title: { text: msg, left: 'center', top: 'middle', textStyle: { color: '#999', fontSize: 14 } }
     }, true);
@@ -1429,3 +1796,4 @@ self.typeParameters = function() {
         defaultLatestDataKeysFunction: function() { return []; }
     };
 };
+

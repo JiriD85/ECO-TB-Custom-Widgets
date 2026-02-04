@@ -62,6 +62,102 @@ async function pathExists(testPath) {
   }
 }
 
+// ==================== Push Single Widget Command ====================
+
+async function pushWidgetCommand(args) {
+  const widgetNames = args.filter((a) => !a.startsWith('--'));
+
+  if (widgetNames.length === 0) {
+    logger.error('Usage: push-widget <widget-name> [widget-name2 ...]');
+    logger.log('\nExamples:');
+    logger.log('  node sync/sync.js push-widget eco_timeseries_zoom_sync');
+    logger.log('  node sync/sync.js push-widget eco_boxplot eco_treemap');
+    return;
+  }
+
+  const config = loadConfig();
+  const api = new ThingsBoardApi({ ...config, logger });
+  await api.login();
+
+  // Find matching widget files
+  const typesDir = path.join(process.cwd(), SOURCE_DIRS.types);
+  const allFiles = await readJsonFiles(typesDir);
+
+  const filesToSync = [];
+  for (const name of widgetNames) {
+    const searchName = name.toLowerCase().replace(/\.json$/, '');
+    const matchingFile = allFiles.find((f) => {
+      const basename = path.basename(f, '.json').toLowerCase();
+      return basename === searchName || basename.includes(searchName);
+    });
+
+    if (matchingFile) {
+      filesToSync.push(matchingFile);
+    } else {
+      logger.warn(`Widget not found: ${name}`);
+    }
+  }
+
+  if (filesToSync.length === 0) {
+    logger.error('No matching widgets found');
+    return;
+  }
+
+  // Backup before sync
+  await backupFiles(logger, filesToSync);
+
+  // Get existing widget types from server
+  logger.log('Fetching existing widget types from server...');
+  const existingTypes = await api.getAllWidgetTypes();
+  const typesByFqn = new Map();
+  for (const wt of existingTypes) {
+    if (wt.fqn) typesByFqn.set(wt.fqn, wt);
+  }
+
+  // Sync each widget
+  for (const file of filesToSync) {
+    const payload = await loadJson(file);
+    const fqn = payload.fqn;
+
+    if (!fqn) {
+      logger.error(`Widget ${path.basename(file)} missing 'fqn' field`);
+      continue;
+    }
+
+    const existing = typesByFqn.get(fqn);
+
+    if (existing) {
+      try {
+        const current = await api.getWidgetTypeById(existing.id.id);
+        payload.id = current.id;
+        payload.version = current.version;
+        payload.tenantId = current.tenantId;
+        payload.createdTime = current.createdTime;
+        logger.log(`Updating: ${fqn} (version: ${current.version})`);
+      } catch (err) {
+        logger.error(`Failed to fetch current version for ${fqn}: ${err.message}`);
+        continue;
+      }
+    } else {
+      delete payload.id;
+      delete payload.version;
+      delete payload.tenantId;
+      delete payload.createdTime;
+      logger.log(`Creating new widget: ${fqn}`);
+    }
+
+    try {
+      await api.saveWidgetType(payload);
+      logger.log(`Synced: ${fqn}`);
+    } catch (err) {
+      logger.error(`Failed to sync ${fqn}: ${err.message}`);
+    }
+  }
+
+  await recordSync();
+  logger.log('Push completed');
+}
+
 // ==================== Sync Command ====================
 
 async function syncCommand(args) {
@@ -571,7 +667,8 @@ function printUsage() {
   logger.log('Usage: node sync/sync.js <command> [options]');
   logger.log('');
   logger.log('Commands:');
-  logger.log('  sync [--widgets] [--js]     Push local resources to ThingsBoard');
+  logger.log('  push-widget <name...>       Push specific widget(s) to ThingsBoard');
+  logger.log('  sync [--widgets] [--js]     Push ALL local resources to ThingsBoard');
   logger.log('                              --widgets  Sync widget bundles and types (default)');
   logger.log('                              --js       Sync JS libraries');
   logger.log('  list-bundles                List all widget bundles on server');
@@ -606,6 +703,9 @@ async function main() {
     switch (command) {
       case 'sync':
         await syncCommand(args);
+        break;
+      case 'push-widget':
+        await pushWidgetCommand(args);
         break;
       case 'list-bundles':
         await listBundlesCommand();
