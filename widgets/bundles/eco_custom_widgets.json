@@ -12,7 +12,7 @@
   "title": "ECO Custom Widgets",
   "image": null,
   "scada": false,
-  "description": "Custom widgets for ECO Smart Diagnostics - includes Load Duration Curve chart and Synchronized Zoom Time Series",
+  "description": "Custom widgets for ECO Smart Diagnostics - includes Load Duration Curve chart, Synchronized Zoom Time Series, and Measurement Hierarchy with Sankey flow visualization",
   "order": 0,
   "externalId": null,
   "version": 161,
