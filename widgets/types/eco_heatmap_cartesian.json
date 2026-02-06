@@ -18,7 +18,7 @@
     ],
     "templateHtml": "<div id=\"widget-wrapper\" style=\"width: 100%; height: 100%; display: flex; flex-direction: column;\">\n  <div id=\"timewindow-selector\" style=\"display: none;\"></div>\n  <div id=\"stats-card-top\" style=\"padding: 4px 8px; display: none;\"></div>\n  <div style=\"flex: 1; min-height: 0; display: flex;\">\n    <div id=\"stats-card-left\" style=\"padding: 4px; display: none;\"></div>\n    <div id=\"chart-container\" style=\"flex: 1; min-height: 0;\"></div>\n    <div id=\"stats-card-right\" style=\"padding: 4px; display: none;\"></div>\n  </div>\n  <div id=\"stats-card-bottom\" style=\"padding: 4px 8px; display: none;\"></div>\n</div>",
     "templateCss": "#widget-wrapper { position: relative; }\n#chart-container { position: relative; }",
-    "controllerScript": "/**\n * ECO Heatmap Cartesian Widget\n *\n * Cartesian heatmap displaying values on an X-Y grid with full ECO standard settings:\n * - Legend/Stats card rendering\n * - Data processing (outlier removal, smoothing)\n * - Toolbox configuration\n * - Timewindow selector\n */\n\nvar chart = null;\nvar utils = window.ECOWidgetUtils;\n\nvar chartContainer = null;\nvar statsCardContainers = {};\nvar timewindowSelectorContainer = null;\nvar resizeObserver = null;\nvar zoomDebounceTimer = null;\nvar widgetId = null;\nvar isExternalUpdate = false;\n\nself.onInit = function() {\n    chartContainer = self.ctx.$container.find('#chart-container')[0];\n    timewindowSelectorContainer = self.ctx.$container.find('#timewindow-selector')[0];\n    statsCardContainers = {\n        top: self.ctx.$container.find('#stats-card-top')[0],\n        bottom: self.ctx.$container.find('#stats-card-bottom')[0],\n        left: self.ctx.$container.find('#stats-card-left')[0],\n        right: self.ctx.$container.find('#stats-card-right')[0]\n    };\n\n    if (!chartContainer) {\n        console.error('ECO Heatmap Cartesian: Chart container not found');\n        return;\n    }\n\n    if (typeof echarts === 'undefined') {\n        console.error('ECO Heatmap Cartesian: ECharts not loaded');\n        return;\n    }\n\n    if (!utils) {\n        console.error('ECO Heatmap Cartesian: ECOWidgetUtils library not loaded');\n        return;\n    }\n\n    chart = echarts.init(chartContainer);\n\n    var settings = self.ctx.settings || {};\n    if (settings.enableZoomSync !== false) {\n        chart.on('datazoom', handleZoomSync);\n        \n        // Subscribe to zoom sync from other widgets\n        if (utils && utils.zoomSync) {\n            utils.zoomSync.subscribe(widgetId, function(start, end) {\n                isExternalUpdate = true;\n                chart.dispatchAction({ type: 'dataZoom', start: start, end: end });\n                setTimeout(function() { isExternalUpdate = false; }, 100);\n            });\n        }\n    }\n\n    updateChart();\n\n    // Multiple delayed resizes for ThingsBoard's async layout\n    [100, 250, 500, 1000].forEach(function(delay) {\n        setTimeout(function() {\n            if (chart && chartContainer) {\n                chart.resize({\n                    width: chartContainer.offsetWidth,\n                    height: chartContainer.offsetHeight\n                });\n            }\n        }, delay);\n    });\n\n    // ResizeObserver for dynamic container changes\n    if (typeof ResizeObserver !== 'undefined') {\n        resizeObserver = new ResizeObserver(function() {\n            requestAnimationFrame(function() {\n                if (chart && chartContainer) {\n                    chart.resize({\n                        width: chartContainer.offsetWidth,\n                        height: chartContainer.offsetHeight\n                    });\n                }\n            });\n        });\n        resizeObserver.observe(chartContainer);\n    }\n};\n\nfunction handleZoomSync(params) {\n    if (isExternalUpdate) return;\n\n    var settings = self.ctx.settings || {};\n    if (settings.enableZoomSync === false) return;\n\n    var debounceMs = settings.zoomSyncDebounce || 150;\n\n    if (zoomDebounceTimer) {\n        clearTimeout(zoomDebounceTimer);\n    }\n\n    zoomDebounceTimer = setTimeout(function() {\n        var option = chart.getOption();\n        var dataZoom = option.dataZoom && option.dataZoom[0];\n        if (!dataZoom) return;\n\n        var timeWindow = self.ctx.timeWindow;\n        if (!timeWindow) return;\n\n        var startPercent = dataZoom.start !== undefined ? dataZoom.start : 0;\n        var endPercent = dataZoom.end !== undefined ? dataZoom.end : 100;\n        \n        // Broadcast zoom to other widgets\n\n            if (utils && utils.zoomSync) { utils.zoomSync.broadcast(widgetId, startPercent, endPercent); }\n        }\n    }, debounceMs);\n}\n\nself.onDataUpdated = function() {\n    isExternalUpdate = true;\n    updateChart();\n    setTimeout(function() { isExternalUpdate = false; }, 100);\n};\n\nfunction getTimeGroupKey(timestamp, grouping) {\n    var d = new Date(timestamp);\n    switch (grouping) {\n        case 'hour':\n            return d.getHours() + ':00';\n        case 'dayOfWeek':\n            return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()];\n        case 'day':\n            return d.getDate();\n        case 'week':\n            var startOfYear = new Date(d.getFullYear(), 0, 1);\n            return 'W' + Math.ceil(((d - startOfYear) / 86400000 + startOfYear.getDay() + 1) / 7);\n        case 'month':\n            return ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()];\n        default:\n            return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();\n    }\n}\n\nfunction getColorScheme(scheme, minColor, maxColor) {\n    switch (scheme) {\n        case 'blue':\n            return ['#E3F2FD', '#2196F3', '#0D47A1'];\n        case 'green':\n            return ['#E8F5E9', '#4CAF50', '#1B5E20'];\n        case 'red':\n            return ['#FFEBEE', '#F44336', '#B71C1C'];\n        case 'temperature':\n            return ['#2196F3', '#FFEB3B', '#F44336'];\n        case 'custom':\n            return [minColor || '#E3F2FD', maxColor || '#0D47A1'];\n        default:\n            return ['#E3F2FD', '#2196F3', '#0D47A1'];\n    }\n}\n\nfunction updateChart() {\n    if (!chart) return;\n\n    var settings = self.ctx.settings || {};\n\n    // Chart settings\n    var xAxisMode = settings.xAxisMode || 'time';\n    var yAxisMode = settings.yAxisMode || 'entity';\n    var timeGrouping = settings.timeGrouping || 'hour';\n    var colorScheme = settings.colorScheme || 'blue';\n    var minColor = settings.minColor || '#E3F2FD';\n    var maxColor = settings.maxColor || '#0D47A1';\n    var showVisualMap = settings.showVisualMap !== false;\n    var minValue = settings.minValue;\n    var maxValue = settings.maxValue;\n    var showDataZoomSlider = settings.showDataZoomSlider !== false;\n    var showTooltip = settings.showTooltip !== false;\n\n    // Legend settings\n    var showLegend = settings.showLegend !== false;\n    var legendStyle = settings.legendStyle || 'classic';\n    var legendPosition = settings.legendPosition || 'bottom';\n    var legendAlign = settings.legendAlign || 'center';\n    var legendCardColorMode = settings.legendCardColorMode || 'auto';\n    var legendCardColor = settings.legendCardColor || '#2196F3';\n    var legendValues = settings.legendValues || ['current'];\n    var showTimestamp = settings.showTimestamp !== false;\n    var timestampFormat = settings.timestampFormat || 'YYYY-MM-DD HH:mm:ss';\n\n    // Data processing settings\n    var removeOutliers = settings.removeOutliers === true;\n    var outlierMethod = settings.outlierMethod || 'iqr';\n    var outlierIqrMultiplier = settings.outlierIqrMultiplier || 1.5;\n    var outlierZscoreThreshold = settings.outlierZscoreThreshold || 3;\n    var outlierMinValue = settings.outlierMinValue;\n    var outlierMaxValue = settings.outlierMaxValue;\n    var smoothingEnabled = settings.smoothingEnabled === true;\n    var smoothingWindowMinutes = settings.smoothingWindowMinutes || 15;\n\n    // Toolbox settings\n    var showToolbox = settings.showToolbox !== false;\n    var toolboxFeatures = settings.toolboxFeatures || ['saveAsImage', 'dataView', 'dataZoom', 'restore'];\n\n    // Timewindow selector settings\n    var showTimewindowSelector = settings.showTimewindowSelector === true;\n\n    // Initialize and render timewindow selector using library\n    if (showTimewindowSelector && self.ctx.dashboard && timewindowSelectorContainer) {\n        utils.timewindow.init(timewindowSelectorContainer, {\n            color: settings.twSelectorColor || '',\n            position: settings.twSelectorPosition || 'center',\n            dayFormat: settings.twSelectorDayFormat || 'D MMM YYYY',\n            weekFormat: settings.twSelectorWeekFormat || 'D-D MMM',\n            monthFormat: settings.twSelectorMonthFormat || 'MMM YYYY',\n            customStartTime: settings.twCustomStartTime || '',\n            customEndTime: settings.twCustomEndTime || '',\n            aggregationType: settings.twAggregationType || 'NONE',\n            maxDataPoints: settings.twMaxDataPoints || 100000\n        }, self.ctx);\n        utils.timewindow.render();\n    } else if (timewindowSelectorContainer) {\n        utils.timewindow.hide();\n    }\n\n    var data = self.ctx.data || [];\n    if (!data.length) {\n        showNoData('No data available');\n        return;\n    }\n\n    var xCategories = [];\n    var yCategories = [];\n    var heatmapData = [];\n    var allValues = [];\n    var units = '';\n    var allStats = [];\n\n    // Build aggregated data\n    var aggregated = {}; // { xKey: { yKey: { sum: 0, count: 0, values: [] } } }\n\n    for (var i = 0; i < data.length; i++) {\n        var ds = data[i];\n        if (!ds.data || !ds.data.length) continue;\n\n        var dataKey = ds.dataKey || {};\n        var entityLabel = dataKey.label || (ds.datasource && ds.datasource.name) || 'Series ' + (i + 1);\n        var seriesUnits = dataKey.units || '';\n        var seriesDecimals = dataKey.decimals !== undefined ? dataKey.decimals : 2;\n        var seriesColor = dataKey.color || utils.color.getDefault(i);\n        if (!units && seriesUnits) units = seriesUnits;\n\n        if (yAxisMode === 'entity' && yCategories.indexOf(entityLabel) === -1) {\n            yCategories.push(entityLabel);\n        }\n\n        // Extract raw values and timestamps for this series\n        var rawValues = [];\n        var timestamps = [];\n        for (var j = 0; j < ds.data.length; j++) {\n            var ts = ds.data[j][0];\n            var val = ds.data[j][1];\n            if (val !== null && val !== undefined && !isNaN(val)) {\n                timestamps.push(ts);\n                rawValues.push(val);\n            }\n        }\n\n        if (rawValues.length === 0) continue;\n\n        var processedValues = rawValues.slice();\n        var processedTimestamps = timestamps.slice();\n\n        // Apply outlier removal using library\n        if (removeOutliers && utils.dataProcessing) {\n            var outlierResult = utils.dataProcessing.removeOutliers(processedValues, processedTimestamps, {\n                method: outlierMethod,\n                iqrMultiplier: outlierIqrMultiplier,\n                zscoreThreshold: outlierZscoreThreshold,\n                minValue: outlierMinValue,\n                maxValue: outlierMaxValue\n            });\n            processedValues = outlierResult.values;\n            processedTimestamps = outlierResult.timestamps;\n        }\n\n        if (processedValues.length === 0) continue;\n\n        // Apply smoothing using library\n        if (smoothingEnabled && smoothingWindowMinutes > 0 && processedTimestamps.length > 1 && utils.dataProcessing) {\n            var windowSize = utils.dataProcessing.getWindowSizeFromMinutes(processedTimestamps, smoothingWindowMinutes);\n            processedValues = utils.dataProcessing.movingAverage(processedValues, windowSize);\n        }\n\n        // Build aggregated data for heatmap\n        for (var k = 0; k < processedValues.length; k++) {\n            var xKey;\n            if (xAxisMode === 'time') {\n                xKey = getTimeGroupKey(processedTimestamps[k], timeGrouping);\n            } else {\n                xKey = new Date(processedTimestamps[k]).toLocaleDateString();\n            }\n\n            var yKey = entityLabel;\n\n            if (!aggregated[xKey]) aggregated[xKey] = {};\n            if (!aggregated[xKey][yKey]) aggregated[xKey][yKey] = { sum: 0, count: 0, values: [] };\n\n            aggregated[xKey][yKey].sum += processedValues[k];\n            aggregated[xKey][yKey].count++;\n            aggregated[xKey][yKey].values.push(processedValues[k]);\n        }\n\n        // Calculate statistics for this series using library\n        var stats = utils.stats.calculate(processedValues);\n        stats.current = processedValues[processedValues.length - 1];\n        stats.lastTimestamp = processedTimestamps[processedTimestamps.length - 1];\n\n        allStats.push({\n            label: entityLabel,\n            units: seriesUnits,\n            decimals: seriesDecimals,\n            color: seriesColor,\n            stats: stats\n        });\n    }\n\n    // Sort x categories appropriately\n    xCategories = Object.keys(aggregated);\n    if (xAxisMode === 'time') {\n        if (timeGrouping === 'hour') {\n            xCategories.sort(function(a, b) { return parseInt(a) - parseInt(b); });\n        } else if (timeGrouping === 'dayOfWeek') {\n            var dayOrder = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];\n            xCategories.sort(function(a, b) { return dayOrder.indexOf(a) - dayOrder.indexOf(b); });\n        } else if (timeGrouping === 'month') {\n            var monthOrder = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];\n            xCategories.sort(function(a, b) { return monthOrder.indexOf(a) - monthOrder.indexOf(b); });\n        } else {\n            xCategories.sort();\n        }\n    } else {\n        xCategories.sort();\n    }\n\n    // Build heatmap data array\n    for (var xi = 0; xi < xCategories.length; xi++) {\n        for (var yi = 0; yi < yCategories.length; yi++) {\n            var xKey = xCategories[xi];\n            var yKey = yCategories[yi];\n            var val = null;\n\n            if (aggregated[xKey] && aggregated[xKey][yKey]) {\n                val = aggregated[xKey][yKey].sum / aggregated[xKey][yKey].count;\n            }\n\n            if (val !== null) {\n                heatmapData.push([xi, yi, val]);\n                allValues.push(val);\n            }\n        }\n    }\n\n    if (heatmapData.length === 0) {\n        showNoData('No valid heatmap data');\n        return;\n    }\n\n    // Calculate data range using library\n    var dataStats = utils.stats.calculate(allValues);\n    var dataMin = minValue !== undefined && minValue !== null ? minValue : dataStats.min;\n    var dataMax = maxValue !== undefined && maxValue !== null ? maxValue : dataStats.max;\n    var colorRange = getColorScheme(colorScheme, minColor, maxColor);\n\n    // Determine if using card-style legend\n    var useStatsCard = showLegend && legendStyle === 'card';\n\n    // Calculate margins based on legend position and style\n    var legendMargin = useStatsCard ? 0 : (showLegend ? 35 : 0);\n    var topMargin = 20;\n    var bottomMargin = showDataZoomSlider ? 60 : 40;\n    var leftMargin = 80;\n    var rightMargin = showVisualMap ? 100 : 20;\n\n    if (!useStatsCard && showLegend) {\n        if (legendPosition === 'top') topMargin += legendMargin;\n        if (legendPosition === 'bottom') bottomMargin += legendMargin;\n        if (legendPosition === 'left') leftMargin += legendMargin;\n        if (legendPosition === 'right') rightMargin += legendMargin;\n    }\n\n    // Build toolbox config using library pattern\n    var toolboxConfig = buildToolboxConfig(showToolbox, toolboxFeatures);\n\n    var option = {\n        tooltip: showTooltip ? {\n            formatter: function(params) {\n                var formattedVal = utils.format.value(params.data[2], 2);\n                return xCategories[params.data[0]] + ' / ' + yCategories[params.data[1]] + '<br/>' +\n                    'Value: ' + formattedVal + ' ' + units;\n            }\n        } : {},\n        toolbox: toolboxConfig,\n        grid: {\n            left: leftMargin,\n            right: rightMargin,\n            top: topMargin,\n            bottom: bottomMargin\n        },\n        xAxis: {\n            type: 'category',\n            data: xCategories,\n            axisLabel: { fontSize: 9, rotate: xCategories.length > 12 ? 45 : 0 },\n            splitArea: { show: true }\n        },\n        yAxis: {\n            type: 'category',\n            data: yCategories,\n            axisLabel: { fontSize: 10 },\n            splitArea: { show: true }\n        },\n        visualMap: showVisualMap ? {\n            min: dataMin,\n            max: dataMax,\n            calculable: true,\n            orient: 'vertical',\n            right: 10,\n            top: 'center',\n            inRange: {\n                color: colorRange\n            },\n            text: [units ? 'High (' + units + ')' : 'High', 'Low'],\n            textStyle: { fontSize: 10 }\n        } : {\n            show: false,\n            min: dataMin,\n            max: dataMax,\n            inRange: { color: colorRange }\n        },\n        dataZoom: [\n            { type: 'inside', xAxisIndex: 0 },\n            showDataZoomSlider ? { type: 'slider', xAxisIndex: 0, bottom: 5, height: 20 } : null\n        ].filter(function(x) { return x !== null; }),\n        series: [{\n            name: 'Heatmap',\n            type: 'heatmap',\n            data: heatmapData,\n            label: {\n                show: heatmapData.length <= 100,\n                fontSize: 9,\n                formatter: function(params) {\n                    return utils.format.value(params.data[2], 1);\n                }\n            },\n            emphasis: {\n                itemStyle: {\n                    shadowBlur: 10,\n                    shadowColor: 'rgba(0, 0, 0, 0.5)'\n                }\n            }\n        }]\n    };\n\n    chart.setOption(option, true);\n\n    // Render statistics cards using library\n    if (useStatsCard && allStats.length > 0) {\n        utils.statsCard.render(statsCardContainers, {\n            showLegend: showLegend,\n            legendStyle: legendStyle,\n            legendAlign: legendAlign,\n            legendCardColorMode: legendCardColorMode,\n            legendCardColor: legendCardColor,\n            legendValues: legendValues,\n            legendPosition: legendPosition,\n            showTimestamp: showTimestamp,\n            timestampFormat: timestampFormat,\n            allStats: allStats\n        });\n    } else {\n        // Hide all stats card containers if not using card style\n        ['top', 'bottom', 'left', 'right'].forEach(function(pos) {\n            var container = statsCardContainers[pos];\n            if (container) {\n                container.style.display = 'none';\n            }\n        });\n    }\n\n    // Resize chart after stats cards may have changed layout\n    function doResize() {\n        if (chart && chartContainer) {\n            chart.resize({\n                width: chartContainer.offsetWidth,\n                height: chartContainer.offsetHeight\n            });\n        }\n    }\n    requestAnimationFrame(function() { requestAnimationFrame(doResize); });\n    setTimeout(doResize, 100);\n    setTimeout(doResize, 250);\n}\n\nfunction showNoData(message) {\n    if (!chart) return;\n    chart.setOption({\n        title: {\n            text: message,\n            left: 'center',\n            top: 'middle',\n            textStyle: { color: '#999', fontSize: 14 }\n        }\n    }, true);\n\n    // Hide all stats card containers\n    ['top', 'bottom', 'left', 'right'].forEach(function(pos) {\n        var container = statsCardContainers[pos];\n        if (container) {\n            container.style.display = 'none';\n        }\n    });\n}\n\nfunction buildToolboxConfig(showToolbox, toolboxFeatures) {\n    if (!showToolbox) return null;\n\n    var features = toolboxFeatures || [];\n    var toolbox = { show: true, right: 10, top: 5, feature: {} };\n\n    if (features.indexOf('saveAsImage') !== -1) {\n        toolbox.feature.saveAsImage = { show: true, title: 'Save as PNG', pixelRatio: 2 };\n    }\n\n    if (features.indexOf('dataView') !== -1) {\n        toolbox.feature.dataView = {\n            show: true,\n            title: 'Data View',\n            readOnly: true,\n            lang: ['Data View', 'Close', 'Refresh']\n        };\n    }\n\n    if (features.indexOf('dataZoom') !== -1) {\n        toolbox.feature.dataZoom = { show: true, title: { zoom: 'Zoom', back: 'Reset Zoom' } };\n    }\n\n    if (features.indexOf('restore') !== -1) {\n        toolbox.feature.restore = { show: true, title: 'Restore' };\n    }\n\n    return toolbox;\n}\n\nself.onResize = function() {\n    if (chart && chartContainer) {\n        chart.resize({\n            width: chartContainer.offsetWidth,\n            height: chartContainer.offsetHeight\n        });\n    }\n};\n\nself.onDestroy = function() {\n    // Unsubscribe from zoom sync\n    if (utils && utils.zoomSync && widgetId) {\n        utils.zoomSync.unsubscribe(widgetId);\n    }\n    \n    if (resizeObserver) {\n        resizeObserver.disconnect();\n        resizeObserver = null;\n    }\n    if (chart) {\n        chart.off('datazoom');\n        chart.dispose();\n        chart = null;\n    }\n    if (zoomDebounceTimer) {\n        clearTimeout(zoomDebounceTimer);\n    }\n};\n\nself.typeParameters = function() {\n    return {\n        previewWidth: '80%',\n        previewHeight: '100%',\n        embedTitlePanel: false,\n        hasDataExportAction: true,\n        dataKeySettingsFunction: function() { return {}; },\n        defaultDataKeysFunction: function() {\n            return [{ name: 'value', label: 'Value', type: 'timeseries' }];\n        }\n    };\n};\n",
+    "controllerScript": "/**\n * ECO Heatmap Cartesian Widget v8\n *\n * Energy monitoring heatmap with:\n * - Day/Week/Month/Custom view modes with automatic timewindow\n * - Custom mode supports entity attribute variables\n * - Configurable time resolution for Y-axis\n * - Compare mode with two heatmaps\n * - Meter reading to consumption calculation\n * - Inline timewindow selector\n * - Stats Card Legend with Baseload/Peak values\n * - Peak Load Markers (subtle gray highlighting)\n */\n\nvar chart = null;\nvar utils = window.ECOWidgetUtils;\n\nvar chartContainer = null;\nvar statsCardContainers = {};\nvar timewindowContainer = null;\nvar resizeObserver = null;\nvar zoomDebounceTimer = null;\nvar widgetId = null;\nvar isExternalUpdate = false;\nvar comparisonData = null;\n\n// Current view state\nvar viewState = {\n    mode: 'week',\n    currentDate: new Date(),\n    customStart: null,\n    customEnd: null\n};\n\n// Cached entity attributes\nvar entityAttributes = {};\n\n// Energy analysis results\nvar energyAnalysis = {\n    operatingBaseline: null,\n    operatingMean: null,\n    operatingStdDev: null,\n    standbyConsumption: null,\n    standbyTotal: null,\n    peakThreshold: null,\n    standbyCells: [],\n    peakCells: []\n};\n\n// User language\nvar userLanguage = 'en';\n\n// ========================================\n// Utility Functions - Statistics\n// ========================================\nvar statsUtils = {\n    calculate: function(values) {\n        if (!values || values.length === 0) {\n            return { mean: 0, median: 0, min: 0, max: 0, sum: 0, count: 0, current: null, stddev: 0 };\n        }\n        var sorted = values.slice().sort(function(a, b) { return a - b; });\n        var sum = 0;\n        for (var i = 0; i < values.length; i++) sum += values[i];\n        var mean = sum / values.length;\n\n        var squaredDiffs = 0;\n        for (var i = 0; i < values.length; i++) {\n            squaredDiffs += Math.pow(values[i] - mean, 2);\n        }\n        var stddev = Math.sqrt(squaredDiffs / values.length);\n\n        return {\n            mean: mean,\n            median: this.percentile(sorted, 50),\n            min: sorted[0],\n            max: sorted[sorted.length - 1],\n            sum: sum,\n            count: values.length,\n            current: values[values.length - 1],\n            stddev: stddev\n        };\n    },\n    percentile: function(sortedValues, p) {\n        if (sortedValues.length === 0) return 0;\n        if (sortedValues.length === 1) return sortedValues[0];\n        var index = (p / 100) * (sortedValues.length - 1);\n        var lower = Math.floor(index);\n        var upper = Math.ceil(index);\n        var weight = index - lower;\n        if (upper >= sortedValues.length) return sortedValues[sortedValues.length - 1];\n        return sortedValues[lower] * (1 - weight) + sortedValues[upper] * weight;\n    }\n};\n\n// ========================================\n// Utility Functions - Color\n// ========================================\nvar colorUtils = {\n    adjust: function(color, amount) {\n        var usePound = false;\n        if (color[0] === '#') { color = color.slice(1); usePound = true; }\n        var num = parseInt(color, 16);\n        var r = Math.min(255, Math.max(0, (num >> 16) + amount));\n        var g = Math.min(255, Math.max(0, ((num >> 8) & 0x00FF) + amount));\n        var b = Math.min(255, Math.max(0, (num & 0x0000FF) + amount));\n        return (usePound ? '#' : '') + (0x1000000 + (r << 16) + (g << 8) + b).toString(16).slice(1);\n    }\n};\n\n// ========================================\n// Utility Functions - Formatting\n// ========================================\nvar formatUtils = {\n    value: function(value, decimals) {\n        if (value === null || value === undefined) return '-';\n        if (decimals === undefined || decimals === null) {\n            if (Math.abs(value) >= 1000) return value.toFixed(0);\n            if (Math.abs(value) >= 100) return value.toFixed(1);\n            return value.toFixed(2);\n        }\n        return value.toFixed(decimals);\n    },\n    timestamp: function(ts, format) {\n        var d = new Date(ts);\n        format = format || 'YYYY-MM-DD HH:mm:ss';\n        return format\n            .replace('YYYY', d.getFullYear())\n            .replace('MM', String(d.getMonth() + 1).padStart(2, '0'))\n            .replace('DD', String(d.getDate()).padStart(2, '0'))\n            .replace('HH', String(d.getHours()).padStart(2, '0'))\n            .replace('mm', String(d.getMinutes()).padStart(2, '0'))\n            .replace('ss', String(d.getSeconds()).padStart(2, '0'));\n    },\n    date: function(date, format, lang) {\n        lang = lang || userLanguage || 'en';\n        var monthsShort = {\n            en: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],\n            de: ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez']\n        };\n        var monthsFull = {\n            en: ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'],\n            de: ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember']\n        };\n        var d = new Date(date);\n        var shortMonths = monthsShort[lang] || monthsShort.en;\n        var fullMonths = monthsFull[lang] || monthsFull.en;\n        format = format || 'D MMM YYYY';\n        var tokens = {\n            'YYYY': d.getFullYear(),\n            'YY': String(d.getFullYear()).slice(-2),\n            'MMMM': fullMonths[d.getMonth()],\n            'MMM': shortMonths[d.getMonth()],\n            'MM': String(d.getMonth() + 1).padStart(2, '0'),\n            'DD': String(d.getDate()).padStart(2, '0'),\n            'D': String(d.getDate()),\n            'M': String(d.getMonth() + 1)\n        };\n        return format.replace(/(YYYY|MMMM|MMM|MM|DD|YY|D|M)/g, function(match) {\n            return tokens[match] !== undefined ? tokens[match] : match;\n        });\n    }\n};\n\n// ========================================\n// Translations (English only now)\n// ========================================\nvar translations = {\n    en: {\n        selectPeriod: 'Select Period', from: 'From', to: 'To', cancel: 'Cancel', apply: 'Apply',\n        day: 'Day', week: 'Week', month: 'Month', custom: 'Custom',\n        baseload: 'Baseload', peak: 'Peak', standby: 'Standby', operating: 'Operating'\n    },\n    de: {\n        selectPeriod: 'Select Period', from: 'From', to: 'To', cancel: 'Cancel', apply: 'Apply',\n        day: 'Day', week: 'Week', month: 'Month', custom: 'Custom',\n        baseload: 'Baseload', peak: 'Peak', standby: 'Standby', operating: 'Operating'\n    }\n};\n\nfunction t(key) {\n    var lang = userLanguage || 'en';\n    var langStrings = translations[lang] || translations.en;\n    return langStrings[key] || translations.en[key] || key;\n}\n\nfunction detectUserLanguage() {\n    try {\n        if (self.ctx && self.ctx.$scope && self.ctx.$scope.$injector) {\n            var translate = self.ctx.$scope.$injector.get('$translate');\n            if (translate && translate.use) {\n                var tbLang = translate.use();\n                if (tbLang) { userLanguage = tbLang.substring(0, 2).toLowerCase(); return; }\n            }\n        }\n    } catch (e) {}\n    try {\n        var tbSettings = localStorage.getItem('thingsboard');\n        if (tbSettings) {\n            var parsed = JSON.parse(tbSettings);\n            if (parsed && parsed.language) { userLanguage = parsed.language.substring(0, 2).toLowerCase(); return; }\n        }\n    } catch (e) {}\n    var browserLang = navigator.language || navigator.userLanguage || 'en';\n    userLanguage = browserLang.substring(0, 2).toLowerCase();\n}\n\n// ========================================\n// Entity Attributes for Custom Time\n// ========================================\nfunction fetchEntityAttributes(callback) {\n    var settings = self.ctx.settings || {};\n    var attributesToFetch = [];\n\n    var settingsToCheck = [\n        settings.customStartTime,\n        settings.customEndTime,\n        settings.twCustomStartTime,\n        settings.twCustomEndTime\n    ];\n\n    settingsToCheck.forEach(function(val) {\n        if (val && typeof val === 'string') {\n            var match = val.match(/^\\$\\{(.+)\\}$/);\n            if (match && attributesToFetch.indexOf(match[1]) === -1) {\n                attributesToFetch.push(match[1]);\n            }\n        }\n    });\n\n    if (attributesToFetch.length === 0) { callback(); return; }\n    if (!self.ctx.datasources || self.ctx.datasources.length === 0) { callback(); return; }\n\n    var ds = self.ctx.datasources[0];\n    if (!ds.entity || !ds.entity.id) { callback(); return; }\n\n    var entityId = ds.entity.id.id;\n    var entityType = ds.entity.id.entityType;\n    var keysParam = attributesToFetch.join(',');\n\n    var loadedCount = 0;\n    var totalScopes = 2;\n\n    function checkComplete() {\n        loadedCount++;\n        if (loadedCount >= totalScopes) callback();\n    }\n\n    if (self.ctx.http) {\n        var serverUrl = '/api/plugins/telemetry/' + entityType + '/' + entityId + '/values/attributes/SERVER_SCOPE?keys=' + keysParam;\n        self.ctx.http.get(serverUrl).subscribe(\n            function(response) {\n                if (response && Array.isArray(response)) {\n                    response.forEach(function(attr) { entityAttributes[attr.key] = attr.value; });\n                }\n                checkComplete();\n            },\n            function(error) { checkComplete(); }\n        );\n\n        var clientUrl = '/api/plugins/telemetry/' + entityType + '/' + entityId + '/values/attributes/CLIENT_SCOPE?keys=' + keysParam;\n        self.ctx.http.get(clientUrl).subscribe(\n            function(response) {\n                if (response && Array.isArray(response)) {\n                    response.forEach(function(attr) {\n                        if (entityAttributes[attr.key] === undefined) {\n                            entityAttributes[attr.key] = attr.value;\n                        }\n                    });\n                }\n                checkComplete();\n            },\n            function(error) { checkComplete(); }\n        );\n    } else {\n        callback();\n    }\n}\n\nfunction resolveTimeValue(valueStr) {\n    if (!valueStr || valueStr === '') return null;\n\n    var varMatch = valueStr.match(/^\\$\\{(.+)\\}$/);\n    if (varMatch) {\n        var attrName = varMatch[1];\n        if (entityAttributes[attrName] !== undefined) {\n            var val = Number(entityAttributes[attrName]);\n            if (!isNaN(val) && val > 0) return val;\n        }\n        if (self.ctx.datasources && self.ctx.datasources[0]) {\n            var ds = self.ctx.datasources[0];\n            if (ds.entity && ds.entity.attributes && ds.entity.attributes[attrName] !== undefined) {\n                var val2 = Number(ds.entity.attributes[attrName]);\n                if (!isNaN(val2) && val2 > 0) return val2;\n            }\n        }\n        return null;\n    }\n\n    var numVal = Number(valueStr);\n    if (!isNaN(numVal) && numVal > 0) return numVal;\n\n    var dateVal = Date.parse(valueStr);\n    if (!isNaN(dateVal)) return dateVal;\n\n    return null;\n}\n\n// ========================================\n// Stats Card Rendering\n// ========================================\nfunction renderStatsCard(config) {\n    ['top', 'bottom', 'left', 'right'].forEach(function(pos) {\n        var container = statsCardContainers[pos];\n        if (container) {\n            container.style.display = 'none';\n            while (container.firstChild) container.removeChild(container.firstChild);\n        }\n    });\n\n    var legendValues = config.legendValues || [];\n    var legendStyle = config.legendStyle || 'classic';\n    var showCard = config.showLegend && legendStyle === 'card' && config.allStats && config.allStats.length > 0;\n\n    if (!showCard) return;\n\n    var position = config.legendPosition || 'bottom';\n    var align = config.legendAlign || 'center';\n    var container = statsCardContainers[position];\n    if (!container) return;\n\n    var isVertical = (position === 'left' || position === 'right');\n    var justifyMap = { left: 'flex-start', center: 'center', right: 'flex-end' };\n\n    container.style.display = 'flex';\n    container.style.flexWrap = 'wrap';\n    container.style.gap = '8px';\n\n    if (isVertical) {\n        container.style.flexDirection = 'column';\n        container.style.alignItems = justifyMap[align];\n        container.style.justifyContent = 'flex-start';\n    } else {\n        container.style.flexDirection = 'row';\n        container.style.justifyContent = justifyMap[align];\n        container.style.alignItems = 'flex-start';\n    }\n\n    config.allStats.forEach(function(seriesInfo) {\n        var card = createStatsCard(seriesInfo, config, isVertical);\n        container.appendChild(card);\n    });\n}\n\nfunction createStatsCard(seriesInfo, config, isVertical) {\n    var stats = seriesInfo.stats;\n    var unit = seriesInfo.units || '';\n    var dec = seriesInfo.decimals !== undefined ? seriesInfo.decimals : 2;\n    var seriesColor = seriesInfo.color || '#2196F3';\n    var colorMode = config.legendCardColorMode || 'auto';\n    var manualColor = config.legendCardColor || '#2196F3';\n    var legendValues = config.legendValues || [];\n\n    var bgColor = colorMode === 'manual' ? manualColor : seriesColor;\n    var bgStyle;\n    if (colorMode === 'gradient') {\n        var gradientDir = isVertical ? '180deg' : '135deg';\n        bgStyle = 'linear-gradient(' + gradientDir + ', ' + bgColor + ' 0%, ' + colorUtils.adjust(bgColor, -40) + ' 100%)';\n    } else {\n        bgStyle = bgColor;\n    }\n\n    var card = document.createElement('div');\n    card.style.cssText = 'background: ' + bgStyle + '; border-radius: 6px; padding: ' + (isVertical ? '10px 8px' : '8px 12px') + '; color: white; box-shadow: 0 2px 6px rgba(0,0,0,0.12); width: fit-content;';\n\n    var titleEl = document.createElement('div');\n    titleEl.style.cssText = 'font-size: ' + (isVertical ? '11px' : '12px') + '; font-weight: 600; margin-bottom: 8px; opacity: 0.95;' + (isVertical ? ' text-align: center;' : '');\n    titleEl.textContent = seriesInfo.label + (unit ? ' (' + unit + ')' : '');\n    card.appendChild(titleEl);\n\n    var statsRow = document.createElement('div');\n    statsRow.style.cssText = 'display: flex; flex-wrap: wrap; gap: 6px;' + (isVertical ? ' flex-direction: column;' : '');\n\n    // Standard stat definitions including baseload and peak\n    var statDefs = {\n        current: { label: 'Current', icon: '●', value: stats.current },\n        min: { label: 'Min', icon: '↓', value: stats.min },\n        max: { label: 'Max', icon: '↑', value: stats.max },\n        mean: { label: 'Mean', icon: 'μ', value: stats.mean },\n        median: { label: 'Median', icon: '~', value: stats.median },\n        sum: { label: 'Sum', icon: 'Σ', value: stats.sum },\n        count: { label: 'Count', icon: 'n', value: stats.count },\n        baseload: { label: 'Baseload', icon: '', value: energyAnalysis.operatingBaseline },\n        peak: { label: 'Peakload', icon: '', value: energyAnalysis.peakThreshold }\n    };\n\n    legendValues.forEach(function(val) {\n        var def = statDefs[val];\n        if (def && def.value !== undefined && def.value !== null) {\n            var formattedVal = val === 'count' ? String(def.value) : formatUtils.value(def.value, dec);\n            var statBox = document.createElement('div');\n\n            // Unified styling for all stat boxes\n            statBox.style.cssText = 'background: rgba(255,255,255,0.18); border-radius: 4px; padding: ' + (isVertical ? '4px 6px' : '4px 8px') + ';' + (isVertical ? ' text-align: center;' : ' min-width: 60px;');\n\n            var labelEl = document.createElement('div');\n            labelEl.style.cssText = 'font-size: 9px; opacity: 0.85;';\n            labelEl.textContent = def.icon ? (def.icon + ' ' + def.label) : def.label;\n            statBox.appendChild(labelEl);\n            var valueEl = document.createElement('div');\n            valueEl.style.cssText = 'font-size: 13px; font-weight: 600;';\n            valueEl.textContent = formattedVal;\n            statBox.appendChild(valueEl);\n            statsRow.appendChild(statBox);\n        }\n    });\n\n    card.appendChild(statsRow);\n\n    if (config.showTimestamp && stats.lastTimestamp) {\n        var timestampEl = document.createElement('div');\n        timestampEl.style.cssText = 'font-size: 9px; opacity: 0.7; margin-top: 6px;' + (isVertical ? ' text-align: center;' : '');\n        timestampEl.textContent = formatUtils.timestamp(stats.lastTimestamp, config.timestampFormat);\n        card.appendChild(timestampEl);\n    }\n\n    return card;\n}\n\n// ========================================\n// View Mode & Timewindow Logic\n// ========================================\nfunction initViewState() {\n    var settings = self.ctx.settings || {};\n    viewState.mode = settings.viewMode || 'week';\n    viewState.currentDate = new Date();\n    viewState.customStart = null;\n    viewState.customEnd = null;\n\n    if (viewState.mode === 'custom') {\n        var startMs = resolveTimeValue(settings.customStartTime);\n        var endMs = resolveTimeValue(settings.customEndTime);\n\n        if (startMs && startMs > 0) {\n            viewState.customStart = startMs;\n            viewState.customEnd = (endMs && endMs > 0) ? endMs : Date.now();\n        } else {\n            var now = Date.now();\n            viewState.customStart = now - (7 * 24 * 60 * 60 * 1000);\n            viewState.customEnd = now;\n        }\n    }\n}\n\nfunction getViewRange() {\n    var settings = self.ctx.settings || {};\n    var d = new Date(viewState.currentDate);\n    var start, end;\n\n    switch (viewState.mode) {\n        case 'day':\n            start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);\n            end = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);\n            break;\n\n        case 'week':\n            var dayOfWeek = d.getDay();\n            var diffToMonday = (dayOfWeek === 0 ? -6 : 1) - dayOfWeek;\n            var monday = new Date(d);\n            monday.setDate(d.getDate() + diffToMonday);\n            start = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate(), 0, 0, 0, 0);\n            var sunday = new Date(monday);\n            sunday.setDate(monday.getDate() + 6);\n            end = new Date(sunday.getFullYear(), sunday.getMonth(), sunday.getDate(), 23, 59, 59, 999);\n            break;\n\n        case 'month':\n            start = new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);\n            end = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);\n            break;\n\n        case 'custom':\n            if (viewState.customStart && viewState.customEnd) {\n                return { start: viewState.customStart, end: viewState.customEnd };\n            }\n            var startMs = resolveTimeValue(settings.customStartTime);\n            var endMs = resolveTimeValue(settings.customEndTime);\n            if (startMs && startMs > 0) {\n                return { start: startMs, end: (endMs && endMs > 0) ? endMs : Date.now() };\n            }\n            var now = Date.now();\n            return { start: now - (7 * 24 * 60 * 60 * 1000), end: now };\n\n        default:\n            start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);\n            end = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);\n    }\n\n    return { start: start.getTime(), end: end.getTime() };\n}\n\nfunction applyViewRange() {\n    var range = getViewRange();\n    if (!range) return;\n\n    if (self.ctx.timewindowFunctions && self.ctx.timewindowFunctions.onUpdateTimewindow) {\n        if (self.ctx.$scope && self.ctx.$scope.$$postDigest) {\n            self.ctx.$scope.$$postDigest(function() {\n                self.ctx.timewindowFunctions.onUpdateTimewindow(range.start, range.end);\n            });\n        } else {\n            setTimeout(function() {\n                self.ctx.timewindowFunctions.onUpdateTimewindow(range.start, range.end);\n            }, 0);\n        }\n    }\n}\n\nfunction navigateView(direction) {\n    var d = new Date(viewState.currentDate);\n    switch (viewState.mode) {\n        case 'day': d.setDate(d.getDate() + direction); break;\n        case 'week': d.setDate(d.getDate() + (direction * 7)); break;\n        case 'month': d.setMonth(d.getMonth() + direction); break;\n        case 'custom':\n            if (viewState.customStart && viewState.customEnd) {\n                var duration = viewState.customEnd - viewState.customStart;\n                viewState.customStart += direction * duration;\n                viewState.customEnd += direction * duration;\n            }\n            break;\n    }\n    viewState.currentDate = d;\n    applyViewRange();\n    renderTimewindowSelector();\n}\n\nfunction selectViewMode(mode) {\n    var settings = self.ctx.settings || {};\n    viewState.mode = mode;\n    viewState.currentDate = new Date();\n\n    if (mode === 'custom') {\n        var startMs = resolveTimeValue(settings.customStartTime);\n        var endMs = resolveTimeValue(settings.customEndTime);\n        if (startMs && startMs > 0) {\n            viewState.customStart = startMs;\n            viewState.customEnd = (endMs && endMs > 0) ? endMs : Date.now();\n        } else {\n            var now = Date.now();\n            viewState.customStart = now - (7 * 24 * 60 * 60 * 1000);\n            viewState.customEnd = now;\n        }\n    } else {\n        viewState.customStart = null;\n        viewState.customEnd = null;\n    }\n\n    applyViewRange();\n    renderTimewindowSelector();\n}\n\nfunction getViewLabel() {\n    var d = viewState.currentDate;\n    var range = getViewRange();\n\n    switch (viewState.mode) {\n        case 'day':\n            var days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];\n            return days[d.getDay()] + ' ' + d.getDate() + '.' + (d.getMonth() + 1) + '.' + d.getFullYear();\n\n        case 'week':\n            var startD = new Date(range.start);\n            var endD = new Date(range.end);\n            return 'Week ' + getWeekNumber(startD) + ' (' + startD.getDate() + '.' + (startD.getMonth() + 1) + '. - ' + endD.getDate() + '.' + (endD.getMonth() + 1) + '.)';\n\n        case 'month':\n            var months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];\n            return months[d.getMonth()] + ' ' + d.getFullYear();\n\n        case 'custom':\n            if (range.start && range.end) {\n                return formatUtils.date(new Date(range.start), 'DD.MM.YY') + ' - ' + formatUtils.date(new Date(range.end), 'DD.MM.YY');\n            }\n            return 'Custom';\n    }\n    return '';\n}\n\n// ========================================\n// Timewindow Selector UI\n// ========================================\nfunction renderTimewindowSelector() {\n    if (!timewindowContainer) return;\n    var settings = self.ctx.settings || {};\n    var showSelector = settings.showTimewindowSelector === true;\n\n    if (!showSelector) { timewindowContainer.style.display = 'none'; return; }\n\n    while (timewindowContainer.firstChild) timewindowContainer.removeChild(timewindowContainer.firstChild);\n\n    var accentColor = settings.twSelectorColor || '#2196F3';\n    if (!settings.twSelectorColor && self.ctx.data && self.ctx.data[0] && self.ctx.data[0].dataKey) {\n        accentColor = self.ctx.data[0].dataKey.color || '#2196F3';\n    }\n\n    var positionMap = { left: 'flex-start', center: 'center', right: 'flex-end' };\n    var position = settings.twSelectorPosition || 'center';\n\n    timewindowContainer.style.display = 'flex';\n    timewindowContainer.style.alignItems = 'center';\n    timewindowContainer.style.justifyContent = positionMap[position] || 'center';\n    timewindowContainer.style.padding = '8px';\n\n    var wrapper = document.createElement('div');\n    wrapper.style.cssText = 'display: flex; align-items: center; gap: 6px; background: ' + accentColor + '; border-radius: 6px; padding: 6px 10px; box-shadow: 0 2px 6px rgba(0,0,0,0.12);';\n\n    var navLeft = createNavButton('◀', function() { navigateView(-1); });\n    wrapper.appendChild(navLeft);\n\n    var btnContainer = document.createElement('div');\n    btnContainer.style.cssText = 'display: flex; gap: 4px;';\n\n    var modes = [\n        { id: 'day', label: 'D', title: t('day') },\n        { id: 'week', label: 'W', title: t('week') },\n        { id: 'month', label: 'M', title: t('month') },\n        { id: 'custom', label: 'C', title: t('custom') }\n    ];\n\n    modes.forEach(function(m) {\n        var isActive = viewState.mode === m.id;\n        var btn = document.createElement('button');\n        btn.textContent = m.label;\n        btn.title = m.title;\n        btn.style.cssText = 'border: none; width: 28px; height: 24px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600; transition: all 0.2s;';\n        if (isActive) { btn.style.background = 'white'; btn.style.color = accentColor; }\n        else { btn.style.background = 'rgba(255,255,255,0.2)'; btn.style.color = 'white'; }\n        btn.onmouseover = function() { if (!isActive) btn.style.background = 'rgba(255,255,255,0.35)'; };\n        btn.onmouseout = function() { if (!isActive) btn.style.background = 'rgba(255,255,255,0.2)'; };\n        btn.onclick = function() { selectViewMode(m.id); };\n        btnContainer.appendChild(btn);\n    });\n\n    wrapper.appendChild(btnContainer);\n\n    var navRight = createNavButton('▶', function() { navigateView(1); });\n    wrapper.appendChild(navRight);\n\n    var label = document.createElement('span');\n    label.style.cssText = 'color: white; font-size: 11px; margin-left: 8px; opacity: 0.9;';\n    label.textContent = getViewLabel();\n    wrapper.appendChild(label);\n\n    if (viewState.mode === 'custom') {\n        var calBtn = createNavButton('📅', function(e) { e.stopPropagation(); showDatePicker(wrapper, accentColor); });\n        calBtn.title = t('selectPeriod');\n        calBtn.style.marginLeft = '4px';\n        wrapper.appendChild(calBtn);\n    }\n\n    timewindowContainer.appendChild(wrapper);\n}\n\nfunction createNavButton(text, onClick) {\n    var btn = document.createElement('button');\n    btn.textContent = text;\n    btn.style.cssText = 'background: rgba(255,255,255,0.2); border: none; color: white; width: 24px; height: 24px; border-radius: 4px; cursor: pointer; font-size: 10px; display: flex; align-items: center; justify-content: center; transition: background 0.2s;';\n    btn.onmouseover = function() { btn.style.background = 'rgba(255,255,255,0.35)'; };\n    btn.onmouseout = function() { btn.style.background = 'rgba(255,255,255,0.2)'; };\n    btn.onclick = onClick;\n    return btn;\n}\n\nfunction showDatePicker(anchor, accentColor) {\n    var existing = document.getElementById('eco-tw-datepicker');\n    if (existing) { existing.remove(); return; }\n\n    var startDate = new Date();\n    var endDate = new Date();\n    startDate.setDate(startDate.getDate() - 7);\n\n    if (viewState.customStart && viewState.customEnd) {\n        startDate = new Date(viewState.customStart);\n        endDate = new Date(viewState.customEnd);\n    }\n\n    function toInputDate(d) {\n        return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');\n    }\n\n    var picker = document.createElement('div');\n    picker.id = 'eco-tw-datepicker';\n    picker.style.cssText = 'position: absolute; top: 100%; left: 50%; transform: translateX(-50%); margin-top: 4px; background: white; border-radius: 8px; padding: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.25); z-index: 10000; min-width: 280px;';\n\n    var title = document.createElement('div');\n    title.style.cssText = 'font-size: 12px; font-weight: 600; color: #333; margin-bottom: 10px;';\n    title.textContent = t('selectPeriod');\n    picker.appendChild(title);\n\n    var inputsRow = document.createElement('div');\n    inputsRow.style.cssText = 'display: flex; gap: 8px;';\n\n    var startDiv = document.createElement('div');\n    startDiv.style.cssText = 'flex: 1;';\n    var startLabel = document.createElement('label');\n    startLabel.style.cssText = 'font-size: 10px; color: #666; display: block; margin-bottom: 2px;';\n    startLabel.textContent = t('from');\n    var startInput = document.createElement('input');\n    startInput.type = 'date';\n    startInput.value = toInputDate(startDate);\n    startInput.style.cssText = 'width: 100%; padding: 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px; box-sizing: border-box;';\n    startDiv.appendChild(startLabel);\n    startDiv.appendChild(startInput);\n    inputsRow.appendChild(startDiv);\n\n    var endDiv = document.createElement('div');\n    endDiv.style.cssText = 'flex: 1;';\n    var endLabel = document.createElement('label');\n    endLabel.style.cssText = 'font-size: 10px; color: #666; display: block; margin-bottom: 2px;';\n    endLabel.textContent = t('to');\n    var endInput = document.createElement('input');\n    endInput.type = 'date';\n    endInput.value = toInputDate(endDate);\n    endInput.style.cssText = 'width: 100%; padding: 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px; box-sizing: border-box;';\n    endDiv.appendChild(endLabel);\n    endDiv.appendChild(endInput);\n    inputsRow.appendChild(endDiv);\n\n    picker.appendChild(inputsRow);\n\n    var btnRow = document.createElement('div');\n    btnRow.style.cssText = 'display: flex; gap: 6px; justify-content: flex-end; margin-top: 10px;';\n\n    var cancelBtn = document.createElement('button');\n    cancelBtn.textContent = t('cancel');\n    cancelBtn.style.cssText = 'padding: 6px 12px; border: 1px solid #ddd; background: white; border-radius: 4px; font-size: 11px; cursor: pointer;';\n    cancelBtn.onclick = function(e) { e.stopPropagation(); picker.remove(); };\n\n    var applyBtn = document.createElement('button');\n    applyBtn.textContent = t('apply');\n    applyBtn.style.cssText = 'padding: 6px 12px; border: none; background: ' + accentColor + '; color: white; border-radius: 4px; font-size: 11px; cursor: pointer; font-weight: 500;';\n    applyBtn.onclick = function(e) {\n        e.stopPropagation();\n        var newStart = new Date(startInput.value);\n        var newEnd = new Date(endInput.value);\n        newEnd.setHours(23, 59, 59, 999);\n        viewState.customStart = newStart.getTime();\n        viewState.customEnd = newEnd.getTime();\n        applyViewRange();\n        picker.remove();\n        renderTimewindowSelector();\n    };\n\n    btnRow.appendChild(cancelBtn);\n    btnRow.appendChild(applyBtn);\n    picker.appendChild(btnRow);\n\n    anchor.style.position = 'relative';\n    anchor.appendChild(picker);\n\n    setTimeout(function() {\n        document.addEventListener('click', function closeHandler(e) {\n            if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener('click', closeHandler); }\n        });\n    }, 100);\n}\n\n// ========================================\n// Heatmap Helper Functions\n// ========================================\nfunction getColorScheme(scheme, minColor, maxColor) {\n    switch (scheme) {\n        case 'blue': return ['#E3F2FD', '#2196F3', '#0D47A1'];\n        case 'green': return ['#E8F5E9', '#4CAF50', '#1B5E20'];\n        case 'red': return ['#FFEBEE', '#F44336', '#B71C1C'];\n        case 'temperature': return ['#2196F3', '#FFEB3B', '#F44336'];\n        case 'energy': return ['#4CAF50', '#8BC34A', '#CDDC39', '#FFEB3B', '#FFC107', '#FF9800', '#FF5722', '#F44336'];\n        case 'efficiency': return ['#F44336', '#FF9800', '#FFEB3B', '#8BC34A', '#4CAF50'];\n        case 'cool': return ['#E1F5FE', '#81D4FA', '#29B6F6', '#0288D1', '#01579B'];\n        case 'heat': return ['#FFF8E1', '#FFECB3', '#FFD54F', '#FFB300', '#FF8F00', '#E65100', '#BF360C'];\n        case 'water': return ['#FFFFFF', '#E3F2FD', '#90CAF9', '#42A5F5', '#1976D2', '#0D47A1'];\n        case 'gas': return ['#FFFFFF', '#FFF8E1', '#FFECB3', '#FFD54F', '#FFB300', '#FF8F00'];\n        case 'custom': return [minColor || '#E3F2FD', maxColor || '#0D47A1'];\n        default: return ['#4CAF50', '#8BC34A', '#CDDC39', '#FFEB3B', '#FFC107', '#FF9800', '#FF5722', '#F44336'];\n    }\n}\n\nfunction generateTimeLabels(resolution) {\n    var labels = [];\n    var minutesPerSlot = { '15min': 15, '30min': 30, '1h': 60, '3h': 180, '6h': 360, '12h': 720, '24h': 1440 }[resolution] || 60;\n    for (var m = 0; m < 1440; m += minutesPerSlot) {\n        var h = Math.floor(m / 60);\n        var min = m % 60;\n        labels.push((h < 10 ? '0' : '') + h + ':' + (min < 10 ? '0' : '') + min);\n    }\n    return labels;\n}\n\nfunction getTimeSlotIndex(timestamp, resolution) {\n    var d = new Date(timestamp);\n    var minutes = d.getHours() * 60 + d.getMinutes();\n    var minutesPerSlot = { '15min': 15, '30min': 30, '1h': 60, '3h': 180, '6h': 360, '12h': 720, '24h': 1440 }[resolution] || 60;\n    return Math.floor(minutes / minutesPerSlot);\n}\n\nfunction getWeekNumber(d) {\n    var date = new Date(d.getTime());\n    date.setHours(0, 0, 0, 0);\n    date.setDate(date.getDate() + 3 - (date.getDay() + 6) % 7);\n    var week1 = new Date(date.getFullYear(), 0, 4);\n    return 1 + Math.round(((date.getTime() - week1.getTime()) / 86400000 - 3 + (week1.getDay() + 6) % 7) / 7);\n}\n\nfunction getDaysInMonth(year, month) {\n    return new Date(year, month + 1, 0).getDate();\n}\n\nfunction generateXCategories(mode, referenceDate) {\n    var d = new Date(referenceDate);\n    var days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];\n\n    switch (mode) {\n        case 'day':\n            return [days[d.getDay()] + ' ' + d.getDate() + '.' + (d.getMonth() + 1) + '.'];\n\n        case 'week':\n            return ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];\n\n        case 'month':\n            var daysInMonth = getDaysInMonth(d.getFullYear(), d.getMonth());\n            var categories = [];\n            for (var i = 1; i <= daysInMonth; i++) {\n                categories.push(i.toString());\n            }\n            return categories;\n\n        case 'custom':\n            var range = getViewRange();\n            var startD = new Date(range.start);\n            var endD = new Date(range.end);\n            var categories = [];\n            var current = new Date(startD);\n            current.setHours(0, 0, 0, 0);\n            endD.setHours(23, 59, 59, 999);\n            while (current <= endD) {\n                categories.push(days[current.getDay()] + ' ' + current.getDate() + '.' + (current.getMonth() + 1) + '.');\n                current.setDate(current.getDate() + 1);\n            }\n            return categories.length > 0 ? categories : ['No data'];\n\n        default:\n            return ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];\n    }\n}\n\nfunction getXIndex(timestamp, mode, xCategories, referenceDate) {\n    var d = new Date(timestamp);\n    var ref = new Date(referenceDate);\n    var days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];\n\n    switch (mode) {\n        case 'day':\n            if (d.getDate() === ref.getDate() && d.getMonth() === ref.getMonth() && d.getFullYear() === ref.getFullYear()) {\n                return 0;\n            }\n            return -1;\n\n        case 'week':\n            var dayIndex = (d.getDay() + 6) % 7;\n            return dayIndex;\n\n        case 'month':\n            if (d.getMonth() !== ref.getMonth() || d.getFullYear() !== ref.getFullYear()) {\n                return -1;\n            }\n            return d.getDate() - 1;\n\n        case 'custom':\n            var label = days[d.getDay()] + ' ' + d.getDate() + '.' + (d.getMonth() + 1) + '.';\n            return xCategories.indexOf(label);\n\n        default:\n            return -1;\n    }\n}\n\nfunction getOperatingState(timestamp, isOnData) {\n    if (!isOnData || isOnData.length === 0) return null;\n\n    var closestValue = null;\n    var closestTs = -Infinity;\n\n    for (var i = 0; i < isOnData.length; i++) {\n        var ts = isOnData[i][0];\n        if (ts <= timestamp && ts > closestTs) {\n            closestTs = ts;\n            closestValue = isOnData[i][1];\n        }\n    }\n\n    if (closestValue === null) return null;\n\n    if (typeof closestValue === 'boolean') return closestValue;\n    if (typeof closestValue === 'number') return closestValue > 0;\n    if (typeof closestValue === 'string') {\n        var lower = closestValue.toLowerCase();\n        return lower === 'true' || lower === '1' || lower === 'on' || lower === 'yes';\n    }\n\n    return null;\n}\n\nfunction processDataForHeatmap(rawData, settings, xCategories, yCategories, referenceDate, isOnData) {\n    var mode = viewState.mode;\n    var timeResolution = settings.timeResolution || '1h';\n    var calculateConsumption = settings.calculateConsumption === true;\n    var aggregationMode = settings.aggregationMode || 'avg';\n    var showBaselineAnalysis = settings.showBaselineAnalysis === true;\n    var showPeakMarkers = settings.showPeakMarkers === true;\n    var standbyThreshold = settings.standbyThreshold || 0.1;\n\n    var aggregated = {};\n    var allValues = [];\n    var allTimestamps = [];\n\n    var operatingValues = [];\n    var standbyValues = [];\n    var cellOperatingState = {};\n\n    var sortedData = rawData.slice().sort(function(a, b) { return a[0] - b[0]; });\n\n    var processedData = [];\n    if (calculateConsumption && sortedData.length > 1) {\n        for (var i = 1; i < sortedData.length; i++) {\n            var delta = sortedData[i][1] - sortedData[i - 1][1];\n            if (delta >= 0) {\n                processedData.push([sortedData[i][0], delta]);\n            }\n        }\n    } else {\n        processedData = sortedData;\n    }\n\n    for (var i = 0; i < processedData.length; i++) {\n        var ts = processedData[i][0];\n        var val = parseFloat(processedData[i][1]);\n        if (isNaN(val)) continue;\n\n        allTimestamps.push(ts);\n\n        var xIndex = getXIndex(ts, mode, xCategories, referenceDate);\n        var yIndex = getTimeSlotIndex(ts, timeResolution);\n\n        if (xIndex < 0 || xIndex >= xCategories.length) continue;\n        if (yIndex < 0 || yIndex >= yCategories.length) continue;\n\n        var key = xIndex + '_' + yIndex;\n        if (!aggregated[key]) {\n            aggregated[key] = { sum: 0, count: 0, min: Infinity, max: -Infinity, timestamps: [] };\n        }\n\n        aggregated[key].sum += val;\n        aggregated[key].count++;\n        aggregated[key].min = Math.min(aggregated[key].min, val);\n        aggregated[key].max = Math.max(aggregated[key].max, val);\n        aggregated[key].timestamps.push(ts);\n\n        if (showBaselineAnalysis && isOnData && isOnData.length > 0) {\n            var isOperating = getOperatingState(ts, isOnData);\n            if (isOperating === true) {\n                operatingValues.push(val);\n                if (!cellOperatingState[key]) cellOperatingState[key] = { operating: 0, standby: 0 };\n                cellOperatingState[key].operating++;\n            } else if (isOperating === false) {\n                standbyValues.push(val);\n                if (!cellOperatingState[key]) cellOperatingState[key] = { operating: 0, standby: 0 };\n                cellOperatingState[key].standby++;\n            }\n        }\n    }\n\n    var heatmapData = [];\n    for (var key in aggregated) {\n        var parts = key.split('_');\n        var xIndex = parseInt(parts[0]);\n        var yIndex = parseInt(parts[1]);\n        var agg = aggregated[key];\n\n        var val;\n        switch (aggregationMode) {\n            case 'sum': val = agg.sum; break;\n            case 'max': val = agg.max; break;\n            case 'min': val = agg.min; break;\n            default: val = agg.sum / agg.count;\n        }\n\n        heatmapData.push([xIndex, yIndex, val]);\n        allValues.push(val);\n    }\n\n    // Reset energy analysis\n    energyAnalysis = {\n        operatingBaseline: null,\n        operatingMean: null,\n        operatingStdDev: null,\n        standbyConsumption: null,\n        standbyTotal: null,\n        peakThreshold: null,\n        standbyCells: [],\n        peakCells: []\n    };\n\n    // Calculate energy analysis from ALL data using selected method\n    if (allValues.length > 0) {\n        var allStats = statsUtils.calculate(allValues);\n        var sortedValues = allValues.slice().sort(function(a, b) { return a - b; });\n\n        energyAnalysis.operatingMean = allStats.mean;\n        energyAnalysis.operatingStdDev = allStats.stddev;\n\n        // Baseload calculation method\n        var baseloadMethod = settings.baseloadMethod || 'percentile';\n        var baseloadPercentile = settings.baseloadPercentile || 10;\n\n        switch (baseloadMethod) {\n            case 'minimum':\n                // Simple minimum\n                energyAnalysis.operatingBaseline = allStats.min;\n                break;\n\n            case 'percentile':\n                // Percentile-based (recommended: 10th percentile)\n                energyAnalysis.operatingBaseline = statsUtils.percentile(sortedValues, baseloadPercentile);\n                break;\n\n            case 'rollingMin':\n                // Rolling minimum per day (X-category), then average of daily minimums\n                var dailyMins = {};\n                for (var i = 0; i < heatmapData.length; i++) {\n                    var xIdx = heatmapData[i][0];\n                    var val = heatmapData[i][2];\n                    if (dailyMins[xIdx] === undefined || val < dailyMins[xIdx]) {\n                        dailyMins[xIdx] = val;\n                    }\n                }\n                var minValues = Object.values(dailyMins);\n                if (minValues.length > 0) {\n                    var minSum = 0;\n                    for (var j = 0; j < minValues.length; j++) minSum += minValues[j];\n                    energyAnalysis.operatingBaseline = minSum / minValues.length;\n                } else {\n                    energyAnalysis.operatingBaseline = allStats.min;\n                }\n                break;\n\n            case 'integral':\n                // Integral method: Use 5th percentile as floor\n                energyAnalysis.operatingBaseline = statsUtils.percentile(sortedValues, 5);\n                break;\n\n            default:\n                energyAnalysis.operatingBaseline = statsUtils.percentile(sortedValues, 10);\n        }\n\n        // Peakload calculation method\n        var peakloadMethod = settings.peakloadMethod || 'percentile';\n        var peakloadPercentile = settings.peakloadPercentile || 95;\n        var peakloadSigma = settings.peakloadSigma || 2;\n\n        if (showPeakMarkers) {\n            switch (peakloadMethod) {\n                case 'percentile':\n                    // Percentile-based (recommended: 95th percentile)\n                    energyAnalysis.peakThreshold = statsUtils.percentile(sortedValues, peakloadPercentile);\n                    break;\n\n                case 'integral':\n                    // Integral method: μ + n*σ (default n=2)\n                    energyAnalysis.peakThreshold = allStats.mean + (allStats.stddev * peakloadSigma);\n                    break;\n\n                case 'percentage':\n                    // Legacy: percentage of mean\n                    var peakValue = settings.peakThresholdValue || 150;\n                    energyAnalysis.peakThreshold = allStats.mean * (peakValue / 100);\n                    break;\n\n                case 'absolute':\n                    // Legacy: absolute value\n                    energyAnalysis.peakThreshold = settings.peakThresholdValue || allStats.max;\n                    break;\n\n                default:\n                    energyAnalysis.peakThreshold = statsUtils.percentile(sortedValues, 95);\n            }\n\n            // Identify peak cells\n            for (var i = 0; i < heatmapData.length; i++) {\n                if (heatmapData[i][2] > energyAnalysis.peakThreshold) {\n                    energyAnalysis.peakCells.push([heatmapData[i][0], heatmapData[i][1]]);\n                }\n            }\n        }\n    }\n\n    // If we have is_on data, refine the analysis using AGGREGATED cell values\n    if (showBaselineAnalysis && Object.keys(cellOperatingState).length > 0) {\n        // Collect aggregated cell values for operating cells (where majority of readings had is_on=true)\n        var operatingCellValues = [];\n        var standbyCellValues = [];\n\n        energyAnalysis.standbyCells = [];\n        energyAnalysis.peakCells = [];\n\n        for (var key in cellOperatingState) {\n            var state = cellOperatingState[key];\n            var parts = key.split('_');\n            var xIndex = parseInt(parts[0]);\n            var yIndex = parseInt(parts[1]);\n\n            // Find the aggregated cell value from heatmapData\n            var cellValue = null;\n            for (var i = 0; i < heatmapData.length; i++) {\n                if (heatmapData[i][0] === xIndex && heatmapData[i][1] === yIndex) {\n                    cellValue = heatmapData[i][2];\n                    break;\n                }\n            }\n\n            if (cellValue !== null) {\n                // Cell is \"operating\" if majority of readings had is_on=true\n                if (state.operating > state.standby) {\n                    operatingCellValues.push(cellValue);\n\n                    // Mark as peak if above threshold\n                    if (showPeakMarkers && energyAnalysis.peakThreshold !== null && cellValue > energyAnalysis.peakThreshold) {\n                        energyAnalysis.peakCells.push([xIndex, yIndex]);\n                    }\n                } else {\n                    standbyCellValues.push(cellValue);\n                    if (cellValue > standbyThreshold) {\n                        energyAnalysis.standbyCells.push([xIndex, yIndex]);\n                    }\n                }\n            }\n        }\n\n        // Calculate baseload from aggregated operating cell values using selected method\n        var nonZeroOperatingCells = operatingCellValues.filter(function(v) { return v > 0.1; });\n        if (nonZeroOperatingCells.length > 0) {\n            var opStats = statsUtils.calculate(nonZeroOperatingCells);\n            var sortedOpCells = nonZeroOperatingCells.slice().sort(function(a, b) { return a - b; });\n\n            var baseloadMethod = settings.baseloadMethod || 'percentile';\n            var baseloadPercentile = settings.baseloadPercentile || 10;\n\n            switch (baseloadMethod) {\n                case 'minimum':\n                    energyAnalysis.operatingBaseline = opStats.min;\n                    break;\n                case 'percentile':\n                    energyAnalysis.operatingBaseline = statsUtils.percentile(sortedOpCells, baseloadPercentile);\n                    break;\n                case 'rollingMin':\n                    // For is_on mode, calculate min per day for operating cells only\n                    var dailyOpMins = {};\n                    for (var key in cellOperatingState) {\n                        var st = cellOperatingState[key];\n                        if (st.operating > st.standby) {\n                            var pts = key.split('_');\n                            var xIdx = parseInt(pts[0]);\n                            for (var k = 0; k < heatmapData.length; k++) {\n                                if (heatmapData[k][0] === xIdx) {\n                                    var v = heatmapData[k][2];\n                                    if (dailyOpMins[xIdx] === undefined || v < dailyOpMins[xIdx]) {\n                                        dailyOpMins[xIdx] = v;\n                                    }\n                                }\n                            }\n                        }\n                    }\n                    var opMinVals = Object.values(dailyOpMins);\n                    if (opMinVals.length > 0) {\n                        var minSum = 0;\n                        for (var m = 0; m < opMinVals.length; m++) minSum += opMinVals[m];\n                        energyAnalysis.operatingBaseline = minSum / opMinVals.length;\n                    } else {\n                        energyAnalysis.operatingBaseline = opStats.min;\n                    }\n                    break;\n                case 'integral':\n                    energyAnalysis.operatingBaseline = statsUtils.percentile(sortedOpCells, 5);\n                    break;\n                default:\n                    energyAnalysis.operatingBaseline = statsUtils.percentile(sortedOpCells, 10);\n            }\n\n            energyAnalysis.operatingMean = opStats.mean;\n            energyAnalysis.operatingStdDev = opStats.stddev;\n        }\n\n        // Calculate standby stats\n        if (standbyCellValues.length > 0) {\n            var standbyStats = statsUtils.calculate(standbyCellValues);\n            energyAnalysis.standbyConsumption = standbyStats.mean;\n            energyAnalysis.standbyTotal = standbyStats.sum;\n        }\n    }\n\n    return { heatmapData: heatmapData, allValues: allValues, allTimestamps: allTimestamps };\n}\n\nfunction loadComparisonData() {\n    var settings = self.ctx.settings || {};\n    if (!settings.compareMode) return;\n\n    var range = getViewRange();\n    if (!range) return;\n\n    var currentStart = range.start;\n    var currentEnd = range.end;\n\n    var offset;\n    switch (settings.comparePeriod) {\n        case 'previousDay': offset = 24 * 60 * 60 * 1000; break;\n        case 'dayLastWeek': offset = 7 * 24 * 60 * 60 * 1000; break;\n        case 'previousWeek': offset = 7 * 24 * 60 * 60 * 1000; break;\n        case 'previousMonth': offset = 30 * 24 * 60 * 60 * 1000; break;\n        default: offset = 7 * 24 * 60 * 60 * 1000;\n    }\n\n    var comparisonStart = currentStart - offset;\n    var comparisonEnd = currentEnd - offset;\n\n    var ds = self.ctx.datasources && self.ctx.datasources[0];\n    if (!ds || !ds.entityId) return;\n\n    var keys = [];\n    if (ds.dataKeys) {\n        keys = ds.dataKeys.map(function(k) { return k.name; });\n    }\n    if (keys.length === 0) return;\n\n    var timeWindow = self.ctx.timeWindow || {};\n    var interval = timeWindow.aggregation ? timeWindow.aggregation.interval : 3600000;\n    var agg = timeWindow.aggregation ? timeWindow.aggregation.type : 'AVG';\n\n    var url = '/api/plugins/telemetry/' + ds.entityType + '/' + ds.entityId +\n        '/values/timeseries?keys=' + keys.join(',') +\n        '&startTs=' + comparisonStart +\n        '&endTs=' + comparisonEnd +\n        '&interval=' + interval +\n        '&agg=' + agg;\n\n    if (self.ctx.http) {\n        self.ctx.http.get(url).subscribe(\n            function(response) {\n                comparisonData = { data: response, startTs: comparisonStart, endTs: comparisonEnd };\n                updateChart();\n            },\n            function(error) { console.error('Failed to fetch comparison data:', error); }\n        );\n    }\n}\n\n// ========================================\n// Main Widget Functions\n// ========================================\nself.onInit = function() {\n    detectUserLanguage();\n\n    chartContainer = self.ctx.$container.find('#chart-container')[0];\n    timewindowContainer = self.ctx.$container.find('#timewindow-selector')[0];\n    statsCardContainers = {\n        top: self.ctx.$container.find('#stats-card-top')[0],\n        bottom: self.ctx.$container.find('#stats-card-bottom')[0],\n        left: self.ctx.$container.find('#stats-card-left')[0],\n        right: self.ctx.$container.find('#stats-card-right')[0]\n    };\n\n    if (!chartContainer) { console.error('ECO Heatmap: Chart container not found'); return; }\n    if (typeof echarts === 'undefined') { console.error('ECO Heatmap: ECharts not loaded'); return; }\n\n    chart = echarts.init(chartContainer);\n\n    var settings = self.ctx.settings || {};\n\n    fetchEntityAttributes(function() {\n        initViewState();\n\n        if (settings.showTimewindowSelector) {\n            applyViewRange();\n            renderTimewindowSelector();\n        }\n\n        if (settings.compareMode === true) {\n            loadComparisonData();\n        }\n\n        updateChart();\n    });\n\n    [100, 250, 500, 1000].forEach(function(delay) {\n        setTimeout(function() {\n            if (chart && chartContainer) {\n                chart.resize({ width: chartContainer.offsetWidth, height: chartContainer.offsetHeight });\n            }\n        }, delay);\n    });\n\n    if (typeof ResizeObserver !== 'undefined') {\n        resizeObserver = new ResizeObserver(function() {\n            requestAnimationFrame(function() {\n                if (chart && chartContainer) {\n                    chart.resize({ width: chartContainer.offsetWidth, height: chartContainer.offsetHeight });\n                }\n            });\n        });\n        resizeObserver.observe(chartContainer);\n    }\n};\n\nself.onDataUpdated = function() {\n    var settings = self.ctx.settings || {};\n    if (settings.showTimewindowSelector) {\n        renderTimewindowSelector();\n    }\n    updateChart();\n};\n\nfunction updateChart() {\n    if (!chart) return;\n\n    var settings = self.ctx.settings || {};\n\n    var timeResolution = settings.timeResolution || '1h';\n    var compareMode = settings.compareMode === true;\n    var colorScheme = settings.colorScheme || 'energy';\n    var minColor = settings.minColor || '#E3F2FD';\n    var maxColor = settings.maxColor || '#0D47A1';\n    var showVisualMap = settings.showVisualMap !== false;\n    var minValue = settings.minValue;\n    var maxValue = settings.maxValue;\n    var showDataZoomSlider = settings.showDataZoomSlider !== false;\n    var showTooltip = settings.showTooltip !== false;\n    var showToolbox = settings.showToolbox !== false;\n    var toolboxFeatures = settings.toolboxFeatures || ['saveAsImage', 'dataView', 'dataZoom', 'restore'];\n    var showBaselineAnalysis = settings.showBaselineAnalysis === true;\n    var showPeakMarkers = settings.showPeakMarkers === true;\n    var peakMarkerColor = settings.peakColor || '#757575'; // Gray color for subtle markers\n\n    var data = self.ctx.data || [];\n    if (!data.length || !data[0].data || !data[0].data.length) {\n        showNoData('No data available');\n        renderStatsCard({ showLegend: false, allStats: [] });\n        return;\n    }\n\n    var rawData = data[0].data;\n    var dataKey = data[0].dataKey || {};\n    var units = dataKey.units || '';\n    var decimals = dataKey.decimals !== undefined ? dataKey.decimals : 2;\n    var label = dataKey.label || dataKey.name || 'Value';\n    var seriesColor = dataKey.color || '#2196F3';\n\n    // Get is_on data if available\n    var isOnData = null;\n    var isOnKeyName = settings.isOnDataKey || 'is_on';\n\n    if (showBaselineAnalysis && data.length > 1) {\n        for (var i = 1; i < data.length; i++) {\n            var dk = data[i].dataKey;\n            if (dk && (dk.name === isOnKeyName || dk.label === isOnKeyName)) {\n                isOnData = data[i].data;\n                break;\n            }\n        }\n    }\n\n    var yCategories = generateTimeLabels(timeResolution);\n    var referenceDate = viewState.currentDate;\n    var xCategories = generateXCategories(viewState.mode, referenceDate);\n\n    var currentResult = processDataForHeatmap(rawData, settings, xCategories, yCategories, referenceDate, isOnData);\n    var heatmapData = currentResult.heatmapData;\n    var allValues = currentResult.allValues;\n    var allTimestamps = currentResult.allTimestamps;\n\n    if (heatmapData.length === 0) {\n        showNoData('No data for selected period');\n        renderStatsCard({ showLegend: false, allStats: [] });\n        return;\n    }\n\n    var stats = statsUtils.calculate(allValues);\n    stats.lastTimestamp = allTimestamps.length > 0 ? allTimestamps[allTimestamps.length - 1] : null;\n\n    renderStatsCard({\n        showLegend: settings.showLegend,\n        legendStyle: settings.legendStyle,\n        legendPosition: settings.legendPosition,\n        legendAlign: settings.legendAlign,\n        legendCardColorMode: settings.legendCardColorMode,\n        legendCardColor: settings.legendCardColor,\n        legendValues: settings.legendValues,\n        showTimestamp: settings.showTimestamp,\n        timestampFormat: settings.timestampFormat,\n        units: units,\n        decimals: decimals,\n        allStats: [{\n            label: label,\n            color: seriesColor,\n            units: units,\n            decimals: decimals,\n            stats: stats\n        }]\n    });\n\n    var dataMin = minValue !== undefined && minValue !== null ? minValue : Math.min.apply(null, allValues);\n    var dataMax = maxValue !== undefined && maxValue !== null ? maxValue : Math.max.apply(null, allValues);\n    var colorRange = getColorScheme(colorScheme, minColor, maxColor);\n\n    var chartTitle = getViewLabel();\n    var toolboxConfig = buildToolboxConfig(showToolbox, toolboxFeatures);\n\n    // Build series\n    var series = [];\n\n    // Main heatmap series\n    var mainSeries = {\n        name: 'Heatmap',\n        type: 'heatmap',\n        data: heatmapData,\n        label: {\n            show: settings.showCellValues === true,\n            fontSize: 9,\n            formatter: function(p) { return p.data[2].toFixed(1); }\n        },\n        emphasis: {\n            itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.5)' }\n        }\n    };\n    series.push(mainSeries);\n\n    // Add peak load markers as subtle gray triangles\n    if (showPeakMarkers && energyAnalysis.peakCells.length > 0) {\n        var peakMarkerData = energyAnalysis.peakCells.map(function(cell) {\n            var cellValue = 0;\n            for (var i = 0; i < heatmapData.length; i++) {\n                if (heatmapData[i][0] === cell[0] && heatmapData[i][1] === cell[1]) {\n                    cellValue = heatmapData[i][2];\n                    break;\n                }\n            }\n            return {\n                value: [cell[0], cell[1], cellValue],\n                itemStyle: {\n                    color: 'rgba(97, 97, 97, 0.7)', // Gray with transparency\n                    borderColor: '#424242',\n                    borderWidth: 1\n                }\n            };\n        });\n\n        series.push({\n            name: 'Peak Load',\n            type: 'scatter',\n            data: peakMarkerData,\n            symbol: 'triangle',\n            symbolSize: 8,\n            z: 100,\n            silent: true\n        });\n    }\n\n    var option;\n\n    if (compareMode && comparisonData) {\n        var compRawData = [];\n        var firstKey = Object.keys(comparisonData.data)[0];\n        if (firstKey && comparisonData.data[firstKey]) {\n            compRawData = comparisonData.data[firstKey].map(function(item) {\n                return [item.ts, parseFloat(item.value)];\n            });\n        }\n\n        var compRefDate = new Date(comparisonData.startTs);\n        var compResult = processDataForHeatmap(compRawData, settings, xCategories, yCategories, compRefDate, null);\n        var compHeatmapData = compResult.heatmapData;\n\n        if (compResult.allValues.length > 0) {\n            dataMin = Math.min(dataMin, Math.min.apply(null, compResult.allValues));\n            dataMax = Math.max(dataMax, Math.max.apply(null, compResult.allValues));\n        }\n\n        var compLabel = 'Comparison: ' + formatUtils.date(compRefDate, 'DD.MM.YYYY');\n\n        option = {\n            title: [\n                { text: chartTitle, left: '10%', top: 5, textStyle: { fontSize: 13, fontWeight: 'bold' } },\n                { text: compLabel, left: '10%', top: '52%', textStyle: { fontSize: 13, fontWeight: 'normal', color: '#666' } }\n            ],\n            tooltip: showTooltip ? {\n                trigger: 'item',\n                formatter: function(params) {\n                    var period = params.seriesIndex === 0 ? 'Current' : 'Comparison';\n                    var xLabel = xCategories[params.data[0]] || '';\n                    var yLabel = yCategories[params.data[1]] || '';\n                    var val = params.data[2];\n                    return period + '<br/>' + xLabel + ', ' + yLabel + '<br/><b>' + val.toFixed(2) + ' ' + units + '</b>';\n                }\n            } : {},\n            axisPointer: { show: true, snap: true, link: [{ xAxisIndex: [0, 1] }], lineStyle: { color: '#999', type: 'dashed' } },\n            toolbox: toolboxConfig,\n            grid: [\n                { left: '10%', right: '15%', top: '8%', height: '38%' },\n                { left: '10%', right: '15%', top: '58%', height: '38%' }\n            ],\n            xAxis: [\n                { type: 'category', gridIndex: 0, data: xCategories, splitArea: { show: true }, axisLabel: { fontSize: 10, rotate: xCategories.length > 12 ? 45 : 0 } },\n                { type: 'category', gridIndex: 1, data: xCategories, splitArea: { show: true }, axisLabel: { fontSize: 10, rotate: xCategories.length > 12 ? 45 : 0 } }\n            ],\n            yAxis: [\n                { type: 'category', gridIndex: 0, data: yCategories, splitArea: { show: true }, axisLabel: { fontSize: 9 }, inverse: false },\n                { type: 'category', gridIndex: 1, data: yCategories, splitArea: { show: true }, axisLabel: { fontSize: 9 }, inverse: false }\n            ],\n            visualMap: showVisualMap ? {\n                min: dataMin, max: dataMax, calculable: true, orient: 'vertical', right: 10, top: 'center',\n                seriesIndex: [0, 1], inRange: { color: colorRange },\n                text: [units ? 'High (' + units + ')' : 'High', 'Low'], textStyle: { fontSize: 10 }\n            } : { show: false, min: dataMin, max: dataMax, seriesIndex: [0, 1], inRange: { color: colorRange } },\n            series: [\n                { name: 'Current', type: 'heatmap', xAxisIndex: 0, yAxisIndex: 0, data: heatmapData, label: { show: false }, emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.5)' } } },\n                { name: 'Comparison', type: 'heatmap', xAxisIndex: 1, yAxisIndex: 1, data: compHeatmapData, label: { show: false }, emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.5)' } } }\n            ]\n        };\n    } else {\n        var topMargin = 30;\n        var bottomMargin = showDataZoomSlider ? 60 : 30;\n\n        option = {\n            title: { text: chartTitle, left: '10%', top: 5, textStyle: { fontSize: 13, fontWeight: 'bold' } },\n            tooltip: showTooltip ? {\n                trigger: 'item',\n                formatter: function(params) {\n                    var xLabel = xCategories[params.data[0]] || '';\n                    var yLabel = yCategories[params.data[1]] || '';\n                    var val = params.data[2];\n                    var tooltipText = xLabel + ', ' + yLabel + '<br/><b>' + val.toFixed(2) + ' ' + units + '</b>';\n\n                    // Check if this cell is a peak cell\n                    if (showPeakMarkers && energyAnalysis.peakThreshold !== null && val > energyAnalysis.peakThreshold) {\n                        var thresholdVal = formatUtils.value(energyAnalysis.peakThreshold, decimals);\n                        tooltipText += '<br/><span style=\"color: #757575;\">△ Above threshold: ' + thresholdVal + ' ' + units + '</span>';\n                    }\n\n                    return tooltipText;\n                }\n            } : {},\n            toolbox: toolboxConfig,\n            grid: { left: '10%', right: showVisualMap ? '15%' : '5%', top: topMargin, bottom: bottomMargin },\n            xAxis: { type: 'category', data: xCategories, splitArea: { show: true }, axisLabel: { fontSize: 10, rotate: xCategories.length > 12 ? 45 : 0 } },\n            yAxis: { type: 'category', data: yCategories, splitArea: { show: true }, axisLabel: { fontSize: 9 }, inverse: false },\n            visualMap: showVisualMap ? {\n                min: dataMin, max: dataMax, calculable: true, orient: 'vertical', right: 10, top: 'center',\n                inRange: { color: colorRange }, text: [units ? 'High (' + units + ')' : 'High', 'Low'], textStyle: { fontSize: 10 },\n                seriesIndex: 0\n            } : { show: false, min: dataMin, max: dataMax, inRange: { color: colorRange }, seriesIndex: 0 },\n            dataZoom: [\n                { type: 'inside', xAxisIndex: 0 },\n                showDataZoomSlider ? { type: 'slider', xAxisIndex: 0, bottom: 5, height: 20 } : null\n            ].filter(function(x) { return x !== null; }),\n            series: series\n        };\n    }\n\n    chart.setOption(option, true);\n\n    function doResize() {\n        if (chart && chartContainer) {\n            chart.resize({ width: chartContainer.offsetWidth, height: chartContainer.offsetHeight });\n        }\n    }\n    requestAnimationFrame(function() { requestAnimationFrame(doResize); });\n    setTimeout(doResize, 100);\n}\n\nfunction showNoData(message) {\n    if (!chart) return;\n    chart.setOption({ title: { text: message, left: 'center', top: 'middle', textStyle: { color: '#999', fontSize: 14 } } }, true);\n}\n\nfunction buildToolboxConfig(showToolbox, toolboxFeatures) {\n    if (!showToolbox) return null;\n    var features = toolboxFeatures || [];\n    var toolbox = { show: true, right: 10, top: 5, feature: {} };\n    if (features.indexOf('saveAsImage') !== -1) toolbox.feature.saveAsImage = { show: true, title: 'Save', pixelRatio: 2 };\n    if (features.indexOf('dataView') !== -1) toolbox.feature.dataView = { show: true, title: 'Data', readOnly: true };\n    if (features.indexOf('dataZoom') !== -1) toolbox.feature.dataZoom = { show: true, title: { zoom: 'Zoom', back: 'Reset' } };\n    if (features.indexOf('restore') !== -1) toolbox.feature.restore = { show: true, title: 'Restore' };\n    return toolbox;\n}\n\nself.onResize = function() {\n    if (chart && chartContainer) {\n        chart.resize({ width: chartContainer.offsetWidth, height: chartContainer.offsetHeight });\n    }\n};\n\nself.onDestroy = function() {\n    if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }\n    if (chart) { chart.dispose(); chart = null; }\n    if (zoomDebounceTimer) clearTimeout(zoomDebounceTimer);\n};\n\nself.typeParameters = function() {\n    return {\n        previewWidth: '80%',\n        previewHeight: '100%',\n        embedTitlePanel: false,\n        hasDataExportAction: true,\n        hasAdditionalLatestDataKeys: true,\n        defaultDataKeysFunction: function() {\n            return [{ name: 'energy', label: 'Energy', type: 'timeseries', units: 'kWh' }];\n        }\n    };\n};\n",
     "settingsSchema": {
       "schema": {
         "type": "object",
@@ -41,45 +41,78 @@
             "type": "boolean",
             "default": true
           },
-          "xAxisMode": {
-            "title": "X-Axis Mode",
+          "viewMode": {
+            "title": "View Mode",
             "type": "string",
-            "default": "time",
+            "default": "week",
             "enum": [
-              "time",
-              "category"
-            ]
-          },
-          "yAxisMode": {
-            "title": "Y-Axis Mode",
-            "type": "string",
-            "default": "entity",
-            "enum": [
-              "entity",
-              "key"
-            ]
-          },
-          "timeGrouping": {
-            "title": "Time Grouping",
-            "type": "string",
-            "default": "hour",
-            "enum": [
-              "hour",
-              "dayOfWeek",
               "day",
               "week",
-              "month"
+              "month",
+              "custom"
+            ]
+          },
+          "timeResolution": {
+            "title": "Time Resolution (Y-Axis)",
+            "type": "string",
+            "default": "1h",
+            "enum": [
+              "15min",
+              "30min",
+              "1h",
+              "3h",
+              "6h",
+              "12h",
+              "24h"
+            ]
+          },
+          "calculateConsumption": {
+            "title": "Calculate Consumption from Meter",
+            "type": "boolean",
+            "default": false
+          },
+          "aggregationMode": {
+            "title": "Aggregation Mode",
+            "type": "string",
+            "default": "avg",
+            "enum": [
+              "avg",
+              "sum",
+              "max",
+              "min"
+            ]
+          },
+          "compareMode": {
+            "title": "Enable Compare Mode",
+            "type": "boolean",
+            "default": false
+          },
+          "comparePeriod": {
+            "title": "Compare Period",
+            "type": "string",
+            "default": "previousWeek",
+            "enum": [
+              "previousDay",
+              "dayLastWeek",
+              "previousWeek",
+              "previousMonth"
             ]
           },
           "colorScheme": {
             "title": "Color Scheme",
             "type": "string",
-            "default": "blue",
+            "default": "energy",
             "enum": [
               "blue",
               "green",
               "red",
               "temperature",
+              "energy",
+              "efficiency",
+              "cool",
+              "heat",
+              "water",
+              "gas",
               "custom"
             ]
           },
@@ -304,11 +337,254 @@
             "title": "Max Data Points",
             "type": "number",
             "default": 100000
+          },
+          "twSelectorDefaultMode": {
+            "title": "Default Selector Mode",
+            "type": "string",
+            "default": "day",
+            "enum": [
+              "day",
+              "week",
+              "month",
+              "custom"
+            ]
+          },
+          "customStartTime": {
+            "title": "Custom Start Time",
+            "type": "string",
+            "default": ""
+          },
+          "customEndTime": {
+            "title": "Custom End Time",
+            "type": "string",
+            "default": ""
+          },
+          "showCellValues": {
+            "title": "Show Values in Cells",
+            "type": "boolean",
+            "default": false
+          },
+          "showBaselineAnalysis": {
+            "title": "Enable Baseline & Standby Analysis",
+            "type": "boolean",
+            "default": false
+          },
+          "isOnDataKey": {
+            "title": "Operating State Key (is_on)",
+            "type": "string",
+            "default": "is_on"
+          },
+          "highlightStandbyConsumption": {
+            "title": "Highlight Standby Consumption",
+            "type": "boolean",
+            "default": true
+          },
+          "standbyColor": {
+            "title": "Standby Alert Color",
+            "type": "string",
+            "default": "#E91E63"
+          },
+          "standbyThreshold": {
+            "title": "Standby Threshold (min value to alert)",
+            "type": "number",
+            "default": 0.1
+          },
+          "showPeakMarkers": {
+            "title": "Show Peak Load Markers",
+            "type": "boolean",
+            "default": false
+          },
+          "peakThresholdMode": {
+            "title": "Peak Threshold Mode",
+            "type": "string",
+            "default": "percentage",
+            "enum": [
+              "percentage",
+              "absolute",
+              "stddev"
+            ]
+          },
+          "peakThresholdValue": {
+            "title": "Peak Threshold Value",
+            "type": "number",
+            "default": 150
+          },
+          "peakColor": {
+            "title": "Peak Marker Color",
+            "type": "string",
+            "default": "#FF5722"
+          },
+          "baseloadMethod": {
+            "title": "Baseload Calculation Method",
+            "type": "string",
+            "default": "percentile",
+            "enum": [
+              "minimum",
+              "percentile",
+              "rollingMin",
+              "integral"
+            ]
+          },
+          "baseloadPercentile": {
+            "title": "Baseload Percentile",
+            "type": "number",
+            "default": 10,
+            "minimum": 1,
+            "maximum": 50
+          },
+          "peakloadMethod": {
+            "title": "Peakload Calculation Method",
+            "type": "string",
+            "default": "percentile",
+            "enum": [
+              "percentile",
+              "integral",
+              "percentage",
+              "absolute"
+            ]
+          },
+          "peakloadPercentile": {
+            "title": "Peakload Percentile",
+            "type": "number",
+            "default": 95,
+            "minimum": 50,
+            "maximum": 99
+          },
+          "peakloadSigma": {
+            "title": "Peak Sigma (μ + n×σ)",
+            "type": "number",
+            "default": 2,
+            "minimum": 1,
+            "maximum": 4
           }
         },
         "required": []
       },
       "form": [
+        [
+          {
+            "key": "viewMode",
+            "type": "rc-select",
+            "multiple": false,
+            "items": [
+              {
+                "value": "day",
+                "label": "Day View (X = days in timewindow)"
+              },
+              {
+                "value": "week",
+                "label": "Week View (X = Mon-Sun)"
+              },
+              {
+                "value": "month",
+                "label": "Month View (X = days 1-31)"
+              },
+              {
+                "value": "custom",
+                "label": "Custom (manual time range)"
+              }
+            ]
+          },
+          {
+            "key": "timeResolution",
+            "type": "rc-select",
+            "multiple": false,
+            "items": [
+              {
+                "value": "15min",
+                "label": "15 minutes (96 slots)"
+              },
+              {
+                "value": "30min",
+                "label": "30 minutes (48 slots)"
+              },
+              {
+                "value": "1h",
+                "label": "1 hour (24 slots)"
+              },
+              {
+                "value": "3h",
+                "label": "3 hours (8 slots)"
+              },
+              {
+                "value": "6h",
+                "label": "6 hours (4 slots)"
+              },
+              {
+                "value": "12h",
+                "label": "12 hours (2 slots)"
+              },
+              {
+                "value": "24h",
+                "label": "24 hours (1 slot)"
+              }
+            ]
+          },
+          "showCellValues",
+          {
+            "key": "customStartTime",
+            "condition": "model.viewMode === 'custom'",
+            "description": "Use ${attributeName} for entity attributes (e.g. ${startTimeMs}) or timestamp in ms"
+          },
+          {
+            "key": "customEndTime",
+            "condition": "model.viewMode === 'custom'",
+            "description": "Use ${attributeName} for entity attributes (e.g. ${endTimeMs}) or timestamp in ms. Leave empty for 'now'"
+          }
+        ],
+        [
+          "calculateConsumption",
+          {
+            "key": "aggregationMode",
+            "type": "rc-select",
+            "multiple": false,
+            "items": [
+              {
+                "value": "avg",
+                "label": "Average (for power kW)"
+              },
+              {
+                "value": "sum",
+                "label": "Sum (for consumption kWh)"
+              },
+              {
+                "value": "max",
+                "label": "Maximum"
+              },
+              {
+                "value": "min",
+                "label": "Minimum"
+              }
+            ]
+          }
+        ],
+        [
+          "compareMode",
+          {
+            "key": "comparePeriod",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.compareMode === true",
+            "items": [
+              {
+                "value": "previousDay",
+                "label": "Day vs. Previous Day"
+              },
+              {
+                "value": "dayLastWeek",
+                "label": "Day vs. Same Day Last Week"
+              },
+              {
+                "value": "previousWeek",
+                "label": "Week vs. Previous Week"
+              },
+              {
+                "value": "previousMonth",
+                "label": "Month vs. Previous Month"
+              }
+            ]
+          }
+        ],
         [
           "enableZoomSync",
           {
@@ -317,68 +593,14 @@
           },
           "showDataZoomSlider",
           {
-            "key": "xAxisMode",
-            "type": "rc-select",
-            "multiple": false,
-            "items": [
-              {
-                "value": "time",
-                "label": "Time-based"
-              },
-              {
-                "value": "category",
-                "label": "Date categories"
-              }
-            ]
-          },
-          {
-            "key": "yAxisMode",
-            "type": "rc-select",
-            "multiple": false,
-            "items": [
-              {
-                "value": "entity",
-                "label": "Entity/Series name"
-              },
-              {
-                "value": "key",
-                "label": "Data key name"
-              }
-            ]
-          },
-          {
-            "key": "timeGrouping",
-            "type": "rc-select",
-            "multiple": false,
-            "condition": "model.xAxisMode === 'time'",
-            "items": [
-              {
-                "value": "hour",
-                "label": "Hour of day (0-23)"
-              },
-              {
-                "value": "dayOfWeek",
-                "label": "Day of week"
-              },
-              {
-                "value": "day",
-                "label": "Day of month"
-              },
-              {
-                "value": "week",
-                "label": "Week number"
-              },
-              {
-                "value": "month",
-                "label": "Month"
-              }
-            ]
-          },
-          {
             "key": "colorScheme",
             "type": "rc-select",
             "multiple": false,
             "items": [
+              {
+                "value": "energy",
+                "label": "Energy (green-yellow-red)"
+              },
               {
                 "value": "blue",
                 "label": "Blue gradient"
@@ -394,6 +616,26 @@
               {
                 "value": "temperature",
                 "label": "Temperature (blue-yellow-red)"
+              },
+              {
+                "value": "efficiency",
+                "label": "Efficiency (red-green, inverted)"
+              },
+              {
+                "value": "cool",
+                "label": "Cooling (light-dark blue)"
+              },
+              {
+                "value": "heat",
+                "label": "Heating (yellow-orange-red)"
+              },
+              {
+                "value": "water",
+                "label": "Water (white-blue)"
+              },
+              {
+                "value": "gas",
+                "label": "Gas (white-yellow-orange)"
               },
               {
                 "value": "custom",
@@ -536,6 +778,14 @@
               {
                 "value": "count",
                 "label": "Count"
+              },
+              {
+                "value": "baseload",
+                "label": "Baseload (min operating value)"
+              },
+              {
+                "value": "peak",
+                "label": "Peak (threshold value)"
               }
             ]
           },
@@ -622,6 +872,30 @@
         [
           "showTimewindowSelector",
           {
+            "key": "twSelectorDefaultMode",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showTimewindowSelector === true",
+            "items": [
+              {
+                "value": "day",
+                "label": "Day"
+              },
+              {
+                "value": "week",
+                "label": "Week"
+              },
+              {
+                "value": "month",
+                "label": "Month"
+              },
+              {
+                "value": "custom",
+                "label": "Custom"
+              }
+            ]
+          },
+          {
             "key": "twSelectorColor",
             "type": "color",
             "condition": "model.showTimewindowSelector === true",
@@ -707,34 +981,146 @@
             "condition": "model.showTimewindowSelector === true",
             "description": "Maximum number of data points to fetch (default: 100000)"
           }
+        ],
+        [
+          "showBaselineAnalysis",
+          {
+            "key": "isOnDataKey",
+            "condition": "model.showBaselineAnalysis === true",
+            "description": "Name of the timeseries key indicating operating state (true=on, false=off)"
+          },
+          {
+            "key": "baseloadMethod",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showBaselineAnalysis === true",
+            "items": [
+              {
+                "value": "minimum",
+                "label": "Minimum (absolute lowest value)"
+              },
+              {
+                "value": "percentile",
+                "label": "Percentile (recommended: 10th)"
+              },
+              {
+                "value": "rollingMin",
+                "label": "Rolling Min (average of daily minimums)"
+              },
+              {
+                "value": "integral",
+                "label": "Integral (5th percentile floor)"
+              }
+            ]
+          },
+          {
+            "key": "baseloadPercentile",
+            "condition": "model.showBaselineAnalysis === true && model.baseloadMethod === 'percentile'",
+            "description": "Percentile for baseload (10 = value exceeded 90% of time)"
+          },
+          {
+            "key": "highlightStandbyConsumption",
+            "condition": "model.showBaselineAnalysis === true"
+          },
+          {
+            "key": "standbyThreshold",
+            "condition": "model.showBaselineAnalysis === true && model.highlightStandbyConsumption === true",
+            "description": "Minimum consumption value to trigger standby alert"
+          },
+          {
+            "key": "standbyColor",
+            "type": "color",
+            "condition": "model.showBaselineAnalysis === true && model.highlightStandbyConsumption === true"
+          },
+          "showPeakMarkers",
+          {
+            "key": "peakloadMethod",
+            "type": "rc-select",
+            "multiple": false,
+            "condition": "model.showPeakMarkers === true",
+            "items": [
+              {
+                "value": "percentile",
+                "label": "Percentile (recommended: 95th)"
+              },
+              {
+                "value": "integral",
+                "label": "Integral (μ + n×σ)"
+              },
+              {
+                "value": "percentage",
+                "label": "Percentage above mean"
+              },
+              {
+                "value": "absolute",
+                "label": "Absolute value threshold"
+              }
+            ]
+          },
+          {
+            "key": "peakloadPercentile",
+            "condition": "model.showPeakMarkers === true && model.peakloadMethod === 'percentile'",
+            "description": "Percentile for peak threshold (95 = top 5% of values)"
+          },
+          {
+            "key": "peakloadSigma",
+            "condition": "model.showPeakMarkers === true && model.peakloadMethod === 'integral'",
+            "description": "Peak = Mean + (Sigma × StdDev). Default 2 = ~95% coverage"
+          },
+          {
+            "key": "peakThresholdValue",
+            "condition": "model.showPeakMarkers === true",
+            "description": "150 = 50% above mean (percentage mode), or absolute value, or number of std devs"
+          },
+          {
+            "key": "peakColor",
+            "type": "color",
+            "condition": "model.showPeakMarkers === true"
+          }
         ]
       ],
       "groupInfoes": [
         {
           "formIndex": 0,
-          "GroupTitle": "Chart Settings"
+          "GroupTitle": "View Configuration"
         },
         {
           "formIndex": 1,
-          "GroupTitle": "Legend Settings"
-        },
-        {
-          "formIndex": 2,
           "GroupTitle": "Data Processing"
         },
         {
+          "formIndex": 2,
+          "GroupTitle": "Compare Mode"
+        },
+        {
           "formIndex": 3,
-          "GroupTitle": "Toolbox Settings"
+          "GroupTitle": "Chart Settings"
         },
         {
           "formIndex": 4,
+          "GroupTitle": "Legend Settings"
+        },
+        {
+          "formIndex": 5,
+          "GroupTitle": "Outlier & Smoothing"
+        },
+        {
+          "formIndex": 6,
+          "GroupTitle": "Toolbox Settings"
+        },
+        {
+          "formIndex": 7,
           "GroupTitle": "Timewindow Selector"
+        },
+        {
+          "formIndex": 8,
+          "GroupTitle": "Energy Analysis"
         }
       ]
     },
     "dataKeySettingsSchema": {},
     "latestDataKeySettingsSchema": {},
-    "defaultConfig": "{\"datasources\":[{\"type\":\"function\",\"name\":\"function\",\"dataKeys\":[{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Sensor A\",\"color\":\"#2196f3\",\"settings\":{},\"_hash\":0.1,\"funcBody\":\"var hour = new Date(time).getHours();\\nvar base = Math.sin(hour / 24 * Math.PI * 2) * 10 + 20;\\nreturn base + Math.random() * 5;\",\"units\":\"°C\",\"decimals\":1},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Sensor B\",\"color\":\"#4CAF50\",\"settings\":{},\"_hash\":0.2,\"funcBody\":\"var hour = new Date(time).getHours();\\nvar base = Math.sin(hour / 24 * Math.PI * 2 + 1) * 8 + 22;\\nreturn base + Math.random() * 4;\",\"units\":\"°C\",\"decimals\":1},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Sensor C\",\"color\":\"#FF9800\",\"settings\":{},\"_hash\":0.3,\"funcBody\":\"var hour = new Date(time).getHours();\\nvar base = Math.sin(hour / 24 * Math.PI * 2 + 2) * 12 + 18;\\nreturn base + Math.random() * 6;\",\"units\":\"°C\",\"decimals\":1}]}],\"timewindow\":{\"hideInterval\":false,\"hideLastInterval\":false,\"hideQuickInterval\":false,\"hideAggregation\":false,\"hideAggInterval\":false,\"hideTimezone\":false,\"selectedTab\":0,\"realtime\":{\"realtimeType\":0,\"timewindowMs\":86400000,\"quickInterval\":\"CURRENT_DAY\",\"interval\":3600000},\"aggregation\":{\"type\":\"AVG\",\"limit\":25000}},\"showTitle\":true,\"backgroundColor\":\"#fff\",\"color\":\"rgba(0, 0, 0, 0.87)\",\"padding\":\"8px\",\"settings\":{\"enableZoomSync\":false,\"zoomSyncDebounce\":150,\"showDataZoomSlider\":true,\"xAxisMode\":\"time\",\"yAxisMode\":\"entity\",\"timeGrouping\":\"hour\",\"colorScheme\":\"blue\",\"showVisualMap\":true,\"showTooltip\":true,\"showLegend\":true,\"legendStyle\":\"classic\",\"legendPosition\":\"bottom\",\"legendAlign\":\"center\",\"legendCardColorMode\":\"auto\",\"legendCardColor\":\"#2196F3\",\"legendValues\":[\"current\"],\"showTimestamp\":true,\"timestampFormat\":\"YYYY-MM-DD HH:mm:ss\",\"removeOutliers\":false,\"outlierMethod\":\"iqr\",\"outlierIqrMultiplier\":1.5,\"smoothingEnabled\":false,\"showToolbox\":true,\"toolboxFeatures\":[\"saveAsImage\",\"dataView\",\"dataZoom\",\"restore\"],\"showTimewindowSelector\":false},\"title\":\"Heatmap Cartesian\",\"dropShadow\":true,\"enableFullscreen\":true,\"useDashboardTimewindow\":true,\"displayTimewindow\":true}"
+    "defaultConfig": "{\"datasources\":[{\"type\":\"function\",\"name\":\"function\",\"dataKeys\":[{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Energy\",\"color\":\"#2196f3\",\"settings\":{},\"_hash\":0.1,\"funcBody\":\"var hour = new Date(time).getHours();\\nvar base = Math.sin(hour / 24 * Math.PI * 2) * 5 + 10;\\nreturn base + Math.random() * 3;\",\"units\":\"kWh\",\"decimals\":2}]}],\"timewindow\":{\"hideInterval\":false,\"hideLastInterval\":false,\"hideQuickInterval\":false,\"hideAggregation\":false,\"hideAggInterval\":false,\"hideTimezone\":false,\"selectedTab\":0,\"realtime\":{\"realtimeType\":0,\"timewindowMs\":86400000,\"quickInterval\":\"CURRENT_DAY\",\"interval\":3600000},\"aggregation\":{\"type\":\"AVG\",\"limit\":25000}},\"showTitle\":true,\"backgroundColor\":\"#fff\",\"color\":\"rgba(0, 0, 0, 0.87)\",\"padding\":\"8px\",\"settings\":{\"viewMode\":\"week\",\"timeResolution\":\"1h\",\"labelFormat\":\"auto\",\"calculateConsumption\":false,\"aggregationMode\":\"avg\",\"compareMode\":false,\"comparePeriod\":\"previousWeek\",\"colorScheme\":\"energy\",\"showVisualMap\":true,\"showTooltip\":true,\"showDataZoomSlider\":true,\"enableZoomSync\":false,\"zoomSyncDebounce\":150,\"showLegend\":false,\"legendStyle\":\"classic\",\"legendPosition\":\"bottom\",\"removeOutliers\":false,\"smoothingEnabled\":false,\"showToolbox\":true,\"toolboxFeatures\":[\"saveAsImage\",\"dataView\",\"dataZoom\",\"restore\"],\"showTimewindowSelector\":false},\"title\":\"Energy Heatmap\",\"dropShadow\":true,\"enableFullscreen\":true,\"useDashboardTimewindow\":true,\"displayTimewindow\":true,\"hasAdditionalLatestDataKeys\":true}"
   },
   "tags": [
     "chart",
