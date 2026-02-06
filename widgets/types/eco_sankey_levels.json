@@ -18,7 +18,7 @@
     ],
     "templateHtml": "<div id=\"chart-container\" style=\"width: 100%; height: 100%;\"></div>",
     "templateCss": "#chart-container { position: relative; }",
-    "controllerScript": "var chart = null;\nvar chartContainer = null;\nvar utils = null;\n\nself.onInit = function() {\n    chartContainer = self.ctx.$container.find('#chart-container')[0];\n    if (!chartContainer) {\n        console.error('Chart container not found');\n        return;\n    }\n    \n    if (typeof echarts === 'undefined') {\n        console.error('ECharts not loaded');\n        return;\n    }\n    \n    // Initialize ECOWidgetUtils library\n    utils = window.ECOWidgetUtils;\n    if (!utils) {\n        console.warn('ECOWidgetUtils not loaded, using fallback functions');\n    }\n    \n    chart = echarts.init(chartContainer);\n    updateChart();\n};\n\nself.onDataUpdated = function() {\n    updateChart();\n};\n\nfunction getLevelColors(levelColors) {\n    if (levelColors && levelColors.length > 0) {\n        return levelColors.split(',').map(function(c) { return c.trim(); });\n    }\n    // Use ECOWidgetUtils color palette if available\n    if (utils && utils.color && utils.color.getDefault) {\n        var colors = [];\n        for (var i = 0; i < 8; i++) {\n            colors.push(utils.color.getDefault(i));\n        }\n        return colors;\n    }\n    return ['#5470C6', '#91CC75', '#FAC858', '#EE6666', '#73C0DE', '#3BA272', '#FC8452', '#9A60B4'];\n}\n\nfunction formatValue(val, decimals) {\n    // Use ECOWidgetUtils formatting if available\n    if (utils && utils.format && utils.format.value) {\n        return utils.format.value(val, decimals);\n    }\n    // Fallback formatting\n    if (val === null || val === undefined) return '-';\n    if (decimals === undefined || decimals === null) {\n        if (Math.abs(val) >= 1000) return val.toFixed(0);\n        if (Math.abs(val) >= 100) return val.toFixed(1);\n        return val.toFixed(2);\n    }\n    return val.toFixed(decimals);\n}\n\nfunction buildManualSankeyData(data, settings) {\n    // Manual mode: expect source, target, value keys OR build from entity relationships in data\n    var nodes = [];\n    var links = [];\n    var nodeSet = {};\n    \n    // Check if we have explicit source/target/value data keys\n    var sourceData = null, targetData = null, valueData = null;\n    \n    for (var i = 0; i < data.length; i++) {\n        var ds = data[i];\n        var keyName = ((ds.dataKey && ds.dataKey.name) || '').toLowerCase();\n        var keyLabel = ((ds.dataKey && ds.dataKey.label) || '').toLowerCase();\n        \n        if (keyName === 'source' || keyLabel === 'source') sourceData = ds;\n        else if (keyName === 'target' || keyLabel === 'target') targetData = ds;\n        else if (keyName === 'value' || keyLabel === 'value' || keyName === 'flow' || keyLabel === 'flow') valueData = ds;\n    }\n    \n    if (sourceData && targetData && valueData) {\n        // Explicit source/target/value mode\n        var sourceMap = {}, targetMap = {}, valueMap = {};\n        if (sourceData.data) sourceData.data.forEach(function(d) { sourceMap[d[0]] = d[1]; });\n        if (targetData.data) targetData.data.forEach(function(d) { targetMap[d[0]] = d[1]; });\n        if (valueData.data) valueData.data.forEach(function(d) { valueMap[d[0]] = d[1]; });\n        \n        var timestamps = {};\n        [sourceData, targetData, valueData].forEach(function(ds) {\n            if (ds && ds.data) ds.data.forEach(function(d) { timestamps[d[0]] = true; });\n        });\n        \n        Object.keys(timestamps).forEach(function(ts) {\n            var source = sourceMap[ts];\n            var target = targetMap[ts];\n            var value = valueMap[ts];\n            \n            if (source && target && value) {\n                if (!nodeSet[source]) {\n                    nodeSet[source] = true;\n                    nodes.push({ name: source });\n                }\n                if (!nodeSet[target]) {\n                    nodeSet[target] = true;\n                    nodes.push({ name: target });\n                }\n                links.push({ source: source, target: target, value: parseFloat(value) || 1 });\n            }\n        });\n    } else {\n        // Fallback: treat each datasource as a flow from one entity to another\n        // Create a simple chain from first to last entity\n        for (var i = 0; i < data.length; i++) {\n            var ds = data[i];\n            var entityName = (ds.datasource && ds.datasource.name) || (ds.dataKey && ds.dataKey.label) || 'Node ' + (i + 1);\n            \n            if (!nodeSet[entityName]) {\n                nodeSet[entityName] = true;\n                nodes.push({ name: entityName, depth: i });\n            }\n            \n            // Get value from first data point\n            var flowValue = 100;\n            if (ds.data && ds.data.length > 0 && ds.data[0].length > 1) {\n                flowValue = parseFloat(ds.data[0][1]) || 100;\n            }\n            \n            if (i > 0) {\n                var prevName = (data[i - 1].datasource && data[i - 1].datasource.name) || \n                               (data[i - 1].dataKey && data[i - 1].dataKey.label) || 'Node ' + i;\n                links.push({ source: prevName, target: entityName, value: flowValue });\n            }\n        }\n    }\n    \n    return { nodes: nodes, links: links };\n}\n\nasync function buildRelationsSankeyData(ctx, settings) {\n    var relationType = settings.relationType || 'Contains';\n    var relationDirection = settings.relationDirection || 'FROM';\n    var flowAttribute = settings.flowAttribute || 'value';\n    \n    var data = ctx.data || [];\n    if (!data.length || !data[0].datasource) {\n        return null;\n    }\n    \n    var rootEntity = data[0].datasource.entity;\n    if (!rootEntity || !rootEntity.id) {\n        return null;\n    }\n    \n    var $injector = ctx.$scope.$injector;\n    var entityRelationService = $injector.get(ctx.servicesMap.get('entityRelationService'));\n    var attributeService = $injector.get(ctx.servicesMap.get('attributeService'));\n    \n    var nodes = [];\n    var links = [];\n    var nodeSet = {};\n    var visited = {};\n    \n    async function loadEntityRelations(entityId, depth) {\n        var entityKey = entityId.entityType + ':' + entityId.id;\n        if (visited[entityKey]) return;\n        visited[entityKey] = true;\n        \n        // Get entity name\n        var nodeName = entityId.entityType + ':' + entityId.id.substring(0, 8);\n        try {\n            var nameAttrs = await attributeService.getEntityAttributes(entityId, 'SERVER_SCOPE', ['name']).toPromise();\n            if (nameAttrs && nameAttrs.length > 0) {\n                nodeName = nameAttrs[0].value || nodeName;\n            }\n        } catch (e) {}\n        \n        if (!nodeSet[nodeName]) {\n            nodeSet[nodeName] = true;\n            nodes.push({ name: nodeName, depth: depth });\n        }\n        \n        try {\n            var query = {\n                parameters: {\n                    rootId: entityId.id,\n                    rootType: entityId.entityType,\n                    direction: relationDirection,\n                    relationTypeGroup: 'COMMON',\n                    maxLevel: 1\n                },\n                filters: [{\n                    relationType: relationType,\n                    entityTypes: []\n                }]\n            };\n            \n            var relations = await entityRelationService.findByQuery(query).toPromise();\n            \n            if (relations && relations.length > 0) {\n                for (var i = 0; i < relations.length; i++) {\n                    var rel = relations[i];\n                    var childId = relationDirection === 'FROM' ? rel.to : rel.from;\n                    \n                    // Get child name\n                    var childName = childId.entityType + ':' + childId.id.substring(0, 8);\n                    try {\n                        var childNameAttrs = await attributeService.getEntityAttributes(childId, 'SERVER_SCOPE', ['name']).toPromise();\n                        if (childNameAttrs && childNameAttrs.length > 0) {\n                            childName = childNameAttrs[0].value || childName;\n                        }\n                    } catch (e) {}\n                    \n                    // Get flow value\n                    var flowValue = 100;\n                    try {\n                        var flowAttrs = await attributeService.getEntityAttributes(childId, 'SERVER_SCOPE', [flowAttribute]).toPromise();\n                        if (flowAttrs && flowAttrs.length > 0) {\n                            flowValue = parseFloat(flowAttrs[0].value) || 100;\n                        }\n                    } catch (e) {}\n                    \n                    if (!nodeSet[childName]) {\n                        nodeSet[childName] = true;\n                        nodes.push({ name: childName, depth: depth + 1 });\n                    }\n                    \n                    links.push({\n                        source: nodeName,\n                        target: childName,\n                        value: flowValue\n                    });\n                    \n                    // Recursively load children (up to depth 4)\n                    if (depth < 4) {\n                        await loadEntityRelations(childId, depth + 1);\n                    }\n                }\n            }\n        } catch (e) {\n            console.warn('Failed to load relations:', e);\n        }\n    }\n    \n    await loadEntityRelations(rootEntity.id, 0);\n    \n    return nodes.length > 0 ? { nodes: nodes, links: links } : null;\n}\n\nfunction updateChart() {\n    if (!chart) return;\n    \n    var settings = self.ctx.settings || {};\n    var dataMode = settings.dataMode || 'manual';\n    \n    var data = self.ctx.data || [];\n    \n    if (dataMode === 'relations') {\n        chart.showLoading();\n        \n        buildRelationsSankeyData(self.ctx, settings).then(function(sankeyData) {\n            chart.hideLoading();\n            if (sankeyData && sankeyData.nodes.length > 0) {\n                renderSankey(sankeyData, settings);\n            } else {\n                var manualData = buildManualSankeyData(data, settings);\n                renderSankey(manualData, settings);\n            }\n        }).catch(function(e) {\n            chart.hideLoading();\n            console.error('Relations loading failed:', e);\n            var manualData = buildManualSankeyData(data, settings);\n            renderSankey(manualData, settings);\n        });\n    } else {\n        var sankeyData = buildManualSankeyData(data, settings);\n        renderSankey(sankeyData, settings);\n    }\n}\n\nfunction buildLegendConfig(settings) {\n    if (settings.showLegend === false) return null;\n    \n    var legendPosition = settings.legendPosition || 'bottom';\n    var legendAlign = settings.legendAlign || 'center';\n    \n    var legendConfig = {\n        show: true,\n        type: 'scroll',\n        textStyle: { fontSize: 11 }\n    };\n    \n    // Position and orientation\n    switch (legendPosition) {\n        case 'top':\n            legendConfig.top = 5;\n            legendConfig.left = 'center';\n            legendConfig.orient = 'horizontal';\n            break;\n        case 'bottom':\n            legendConfig.bottom = 5;\n            legendConfig.left = 'center';\n            legendConfig.orient = 'horizontal';\n            break;\n        case 'left':\n            legendConfig.left = 5;\n            legendConfig.top = 'middle';\n            legendConfig.orient = 'vertical';\n            break;\n        case 'right':\n            legendConfig.right = 5;\n            legendConfig.top = 'middle';\n            legendConfig.orient = 'vertical';\n            break;\n        default:\n            legendConfig.bottom = 5;\n            legendConfig.left = 'center';\n            legendConfig.orient = 'horizontal';\n    }\n    \n    // Alignment adjustment for horizontal legends\n    if (legendPosition === 'top' || legendPosition === 'bottom') {\n        if (legendAlign === 'left') legendConfig.left = 10;\n        else if (legendAlign === 'right') legendConfig.left = undefined, legendConfig.right = 10;\n    }\n    \n    return legendConfig;\n}\n\nfunction buildToolboxConfig(settings) {\n    if (settings.showToolbox === false) return null;\n    \n    var features = settings.toolboxFeatures || ['saveAsImage', 'dataView'];\n    var toolbox = { show: true, right: 10, top: 5, feature: {} };\n    \n    if (features.indexOf('saveAsImage') !== -1) {\n        toolbox.feature.saveAsImage = { show: true, title: 'Save as PNG', pixelRatio: 2 };\n    }\n    \n    if (features.indexOf('dataView') !== -1) {\n        toolbox.feature.dataView = {\n            show: true,\n            title: 'Data View',\n            readOnly: true,\n            lang: ['Data View', 'Close', 'Refresh']\n        };\n    }\n    \n    if (features.indexOf('restore') !== -1) {\n        toolbox.feature.restore = { show: true, title: 'Restore' };\n    }\n    \n    return toolbox;\n}\n\nfunction renderSankey(sankeyData, settings) {\n    if (!chart || !sankeyData) return;\n    \n    var orient = settings.orient || 'horizontal';\n    var nodeWidth = settings.nodeWidth || 20;\n    var nodeGap = settings.nodeGap || 10;\n    var levelColors = settings.levelColors || '';\n    var linkOpacity = settings.linkOpacity || 0.4;\n    var linkColorMode = settings.linkColorMode || 'gradient';\n    var labelPosition = settings.labelPosition || 'right';\n    var showTooltip = settings.showTooltip !== false;\n    var valueDecimals = settings.valueDecimals !== undefined ? settings.valueDecimals : 2;\n    \n    // Legend settings\n    var showLegend = settings.showLegend !== false;\n    \n    // Toolbox settings\n    var showToolbox = settings.showToolbox !== false;\n    \n    if (sankeyData.nodes.length === 0 || sankeyData.links.length === 0) {\n        chart.setOption({\n            title: { text: 'No valid Sankey data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    var colors = getLevelColors(levelColors);\n    \n    // Assign colors based on depth\n    var maxDepth = 0;\n    sankeyData.nodes.forEach(function(node) {\n        if (node.depth !== undefined && node.depth > maxDepth) {\n            maxDepth = node.depth;\n        }\n    });\n    \n    sankeyData.nodes.forEach(function(node, i) {\n        var depth = node.depth !== undefined ? node.depth : i;\n        node.itemStyle = { color: colors[depth % colors.length] };\n    });\n    \n    // Build levels configuration\n    var levels = [];\n    for (var i = 0; i <= maxDepth; i++) {\n        levels.push({\n            depth: i,\n            itemStyle: {\n                color: colors[i % colors.length]\n            },\n            lineStyle: {\n                color: linkColorMode === 'source' ? 'source' : (linkColorMode === 'target' ? 'target' : 'gradient'),\n                opacity: linkOpacity\n            }\n        });\n    }\n    \n    // Calculate margins based on legend and toolbox\n    var topMargin = 20;\n    var bottomMargin = 20;\n    var leftMargin = 50;\n    var rightMargin = 50;\n    \n    if (showToolbox) {\n        topMargin = 40;\n        rightMargin = 80;\n    }\n    \n    if (showLegend) {\n        var legendPosition = settings.legendPosition || 'bottom';\n        if (legendPosition === 'top') topMargin += 30;\n        else if (legendPosition === 'bottom') bottomMargin += 30;\n        else if (legendPosition === 'left') leftMargin += 80;\n        else if (legendPosition === 'right') rightMargin += 80;\n    }\n    \n    var option = {\n        tooltip: showTooltip ? {\n            trigger: 'item',\n            formatter: function(params) {\n                if (params.dataType === 'edge') {\n                    return params.data.source + ' \\u2192 ' + params.data.target + '<br/>Flow: ' + formatValue(params.data.value, valueDecimals);\n                } else {\n                    return params.data.name;\n                }\n            }\n        } : {},\n        legend: buildLegendConfig(settings),\n        toolbox: buildToolboxConfig(settings),\n        series: [{\n            type: 'sankey',\n            data: sankeyData.nodes,\n            links: sankeyData.links,\n            orient: orient,\n            nodeWidth: nodeWidth,\n            nodeGap: nodeGap,\n            layoutIterations: 32,\n            emphasis: {\n                focus: 'adjacency'\n            },\n            label: {\n                position: labelPosition,\n                fontSize: 11\n            },\n            lineStyle: {\n                color: linkColorMode === 'source' ? 'source' : (linkColorMode === 'target' ? 'target' : 'gradient'),\n                opacity: linkOpacity,\n                curveness: 0.5\n            },\n            levels: levels,\n            left: leftMargin,\n            right: rightMargin,\n            top: topMargin,\n            bottom: bottomMargin\n        }]\n    };\n    \n    chart.setOption(option, true);\n}\n\nself.onResize = function() {\n    if (chart) {\n        chart.resize();\n    }\n};\n\nself.onDestroy = function() {\n    if (chart) {\n        chart.dispose();\n        chart = null;\n    }\n};\n\nself.typeParameters = function() {\n    return {\n        previewWidth: '100%',\n        embedTitlePanel: true,\n        dataKeySettingsFunction: function() { return {}; },\n        defaultDataKeysFunction: function() {\n            return [\n                { name: 'source', label: 'Source', type: 'attribute' },\n                { name: 'target', label: 'Target', type: 'attribute' },\n                { name: 'value', label: 'Flow Value', type: 'attribute' }\n            ];\n        }\n    };\n};\n",
+    "controllerScript": "var chart = null;\nvar chartContainer = null;\nvar utils = null;\n\nself.onInit = function() {\n    chartContainer = self.ctx.$container.find('#chart-container')[0];\n    if (!chartContainer) {\n        console.error('Chart container not found');\n        return;\n    }\n    \n    if (typeof echarts === 'undefined') {\n        console.error('ECharts not loaded');\n        return;\n    }\n    \n    // Initialize ECOWidgetUtils library\n    utils = window.ECOWidgetUtils;\n    if (!utils) {\n        console.warn('ECOWidgetUtils not loaded, using fallback functions');\n    }\n    \n    chart = echarts.init(chartContainer);\n    updateChart();\n};\n\nself.onDataUpdated = function() {\n    updateChart();\n};\n\nfunction getLevelColors(levelColors) {\n    if (levelColors && levelColors.length > 0) {\n        return levelColors.split(',').map(function(c) { return c.trim(); });\n    }\n    // Use ECOWidgetUtils color palette if available\n    if (utils && utils.color && utils.color.getDefault) {\n        var colors = [];\n        for (var i = 0; i < 8; i++) {\n            colors.push(utils.color.getDefault(i));\n        }\n        return colors;\n    }\n    return ['#5470C6', '#91CC75', '#FAC858', '#EE6666', '#73C0DE', '#3BA272', '#FC8452', '#9A60B4'];\n}\n\nfunction formatValue(val, decimals) {\n    // Use ECOWidgetUtils formatting if available\n    if (utils && utils.format && utils.format.value) {\n        return utils.format.value(val, decimals);\n    }\n    // Fallback formatting\n    if (val === null || val === undefined) return '-';\n    if (decimals === undefined || decimals === null) {\n        if (Math.abs(val) >= 1000) return val.toFixed(0);\n        if (Math.abs(val) >= 100) return val.toFixed(1);\n        return val.toFixed(2);\n    }\n    return val.toFixed(decimals);\n}\n\nfunction buildManualSankeyData(data, settings) {\n    // Manual mode: expect source, target, value keys OR build from entity relationships in data\n    var nodes = [];\n    var links = [];\n    var nodeSet = {};\n    \n    // Check if we have explicit source/target/value data keys\n    var sourceData = null, targetData = null, valueData = null;\n    \n    for (var i = 0; i < data.length; i++) {\n        var ds = data[i];\n        var keyName = ((ds.dataKey && ds.dataKey.name) || '').toLowerCase();\n        var keyLabel = ((ds.dataKey && ds.dataKey.label) || '').toLowerCase();\n        \n        if (keyName === 'source' || keyLabel === 'source') sourceData = ds;\n        else if (keyName === 'target' || keyLabel === 'target') targetData = ds;\n        else if (keyName === 'value' || keyLabel === 'value' || keyName === 'flow' || keyLabel === 'flow') valueData = ds;\n    }\n    \n    if (sourceData && targetData && valueData) {\n        // Explicit source/target/value mode\n        var sourceMap = {}, targetMap = {}, valueMap = {};\n        if (sourceData.data) sourceData.data.forEach(function(d) { sourceMap[d[0]] = d[1]; });\n        if (targetData.data) targetData.data.forEach(function(d) { targetMap[d[0]] = d[1]; });\n        if (valueData.data) valueData.data.forEach(function(d) { valueMap[d[0]] = d[1]; });\n        \n        var timestamps = {};\n        [sourceData, targetData, valueData].forEach(function(ds) {\n            if (ds && ds.data) ds.data.forEach(function(d) { timestamps[d[0]] = true; });\n        });\n        \n        Object.keys(timestamps).forEach(function(ts) {\n            var source = sourceMap[ts];\n            var target = targetMap[ts];\n            var value = valueMap[ts];\n            \n            if (source && target && value) {\n                if (!nodeSet[source]) {\n                    nodeSet[source] = true;\n                    nodes.push({ name: source });\n                }\n                if (!nodeSet[target]) {\n                    nodeSet[target] = true;\n                    nodes.push({ name: target });\n                }\n                links.push({ source: source, target: target, value: parseFloat(value) || 1 });\n            }\n        });\n    } else {\n        // Fallback: treat each datasource as a flow from one entity to another\n        // Create a simple chain from first to last entity\n        for (var i = 0; i < data.length; i++) {\n            var ds = data[i];\n            var entityName = (ds.datasource && ds.datasource.name) || (ds.dataKey && ds.dataKey.label) || 'Node ' + (i + 1);\n            \n            if (!nodeSet[entityName]) {\n                nodeSet[entityName] = true;\n                nodes.push({ name: entityName, depth: i });\n            }\n            \n            // Get value from first data point\n            var flowValue = 100;\n            if (ds.data && ds.data.length > 0 && ds.data[0].length > 1) {\n                flowValue = parseFloat(ds.data[0][1]) || 100;\n            }\n            \n            if (i > 0) {\n                var prevName = (data[i - 1].datasource && data[i - 1].datasource.name) || \n                               (data[i - 1].dataKey && data[i - 1].dataKey.label) || 'Node ' + i;\n                links.push({ source: prevName, target: entityName, value: flowValue });\n            }\n        }\n    }\n    \n    return { nodes: nodes, links: links };\n}\n\nasync function buildRelationsSankeyData(ctx, settings) {\n    var relationType = settings.relationType || 'Contains';\n    var relationDirection = settings.relationDirection || 'FROM';\n    var flowAttribute = settings.flowAttribute || 'value';\n    \n    var data = ctx.data || [];\n    if (!data.length || !data[0].datasource) {\n        return null;\n    }\n    \n    var rootEntity = data[0].datasource.entity;\n    if (!rootEntity || !rootEntity.id) {\n        return null;\n    }\n    \n    var $injector = ctx.$scope.$injector;\n    var entityRelationService = $injector.get(ctx.servicesMap.get('entityRelationService'));\n    var attributeService = $injector.get(ctx.servicesMap.get('attributeService'));\n    \n    var nodes = [];\n    var links = [];\n    var nodeSet = {};\n    var visited = {};\n    \n    async function loadEntityRelations(entityId, depth) {\n        var entityKey = entityId.entityType + ':' + entityId.id;\n        if (visited[entityKey]) return;\n        visited[entityKey] = true;\n        \n        // Get entity name\n        var nodeName = entityId.entityType + ':' + entityId.id.substring(0, 8);\n        try {\n            var nameAttrs = await attributeService.getEntityAttributes(entityId, 'SERVER_SCOPE', ['name']).toPromise();\n            if (nameAttrs && nameAttrs.length > 0) {\n                nodeName = nameAttrs[0].value || nodeName;\n            }\n        } catch (e) {}\n        \n        if (!nodeSet[nodeName]) {\n            nodeSet[nodeName] = true;\n            nodes.push({ name: nodeName, depth: depth });\n        }\n        \n        try {\n            var query = {\n                parameters: {\n                    rootId: entityId.id,\n                    rootType: entityId.entityType,\n                    direction: relationDirection,\n                    relationTypeGroup: 'COMMON',\n                    maxLevel: 1\n                },\n                filters: [{\n                    relationType: relationType,\n                    entityTypes: []\n                }]\n            };\n            \n            var relations = await entityRelationService.findByQuery(query).toPromise();\n            \n            if (relations && relations.length > 0) {\n                for (var i = 0; i < relations.length; i++) {\n                    var rel = relations[i];\n                    var childId = relationDirection === 'FROM' ? rel.to : rel.from;\n                    \n                    // Get child name\n                    var childName = childId.entityType + ':' + childId.id.substring(0, 8);\n                    try {\n                        var childNameAttrs = await attributeService.getEntityAttributes(childId, 'SERVER_SCOPE', ['name']).toPromise();\n                        if (childNameAttrs && childNameAttrs.length > 0) {\n                            childName = childNameAttrs[0].value || childName;\n                        }\n                    } catch (e) {}\n                    \n                    // Get flow value\n                    var flowValue = 100;\n                    try {\n                        var flowAttrs = await attributeService.getEntityAttributes(childId, 'SERVER_SCOPE', [flowAttribute]).toPromise();\n                        if (flowAttrs && flowAttrs.length > 0) {\n                            flowValue = parseFloat(flowAttrs[0].value) || 100;\n                        }\n                    } catch (e) {}\n                    \n                    if (!nodeSet[childName]) {\n                        nodeSet[childName] = true;\n                        nodes.push({ name: childName, depth: depth + 1 });\n                    }\n                    \n                    links.push({\n                        source: nodeName,\n                        target: childName,\n                        value: flowValue\n                    });\n                    \n                    // Recursively load children (up to depth 4)\n                    if (depth < 4) {\n                        await loadEntityRelations(childId, depth + 1);\n                    }\n                }\n            }\n        } catch (e) {\n            console.warn('Failed to load relations:', e);\n        }\n    }\n    \n    await loadEntityRelations(rootEntity.id, 0);\n    \n    return nodes.length > 0 ? { nodes: nodes, links: links } : null;\n}\n\nfunction updateChart() {\n    if (!chart) return;\n    \n    var settings = self.ctx.settings || {};\n    var dataMode = settings.dataMode || 'manual';\n    \n    var data = self.ctx.data || [];\n    \n    if (dataMode === 'relations') {\n        chart.showLoading();\n        \n        buildRelationsSankeyData(self.ctx, settings).then(function(sankeyData) {\n            chart.hideLoading();\n            if (sankeyData && sankeyData.nodes.length > 0) {\n                renderSankey(sankeyData, settings);\n            } else {\n                var manualData = buildManualSankeyData(data, settings);\n                renderSankey(manualData, settings);\n            }\n        }).catch(function(e) {\n            chart.hideLoading();\n            console.error('Relations loading failed:', e);\n            var manualData = buildManualSankeyData(data, settings);\n            renderSankey(manualData, settings);\n        });\n    } else {\n        var sankeyData = buildManualSankeyData(data, settings);\n        renderSankey(sankeyData, settings);\n    }\n}\n\nfunction buildLegendConfig(settings) {\n    if (settings.showLegend === false) return null;\n    \n    var legendPosition = settings.legendPosition || 'bottom';\n    var legendAlign = settings.legendAlign || 'center';\n    \n    var legendConfig = {\n        show: true,\n        type: 'scroll',\n        textStyle: { fontSize: 11 }\n    };\n    \n    // Position and orientation\n    switch (legendPosition) {\n        case 'top':\n            legendConfig.top = 5;\n            legendConfig.left = 'center';\n            legendConfig.orient = 'horizontal';\n            break;\n        case 'bottom':\n            legendConfig.bottom = 5;\n            legendConfig.left = 'center';\n            legendConfig.orient = 'horizontal';\n            break;\n        case 'left':\n            legendConfig.left = 5;\n            legendConfig.top = 'middle';\n            legendConfig.orient = 'vertical';\n            break;\n        case 'right':\n            legendConfig.right = 5;\n            legendConfig.top = 'middle';\n            legendConfig.orient = 'vertical';\n            break;\n        default:\n            legendConfig.bottom = 5;\n            legendConfig.left = 'center';\n            legendConfig.orient = 'horizontal';\n    }\n    \n    // Alignment adjustment for horizontal legends\n    if (legendPosition === 'top' || legendPosition === 'bottom') {\n        if (legendAlign === 'left') legendConfig.left = 10;\n        else if (legendAlign === 'right') legendConfig.left = undefined, legendConfig.right = 10;\n    }\n    \n    return legendConfig;\n}\n\nfunction buildToolboxConfig(settings) {\n    if (settings.showToolbox === false) return null;\n    \n    var features = settings.toolboxFeatures || ['saveAsImage', 'dataView'];\n    var toolbox = { show: true, right: 10, top: 5, feature: {} };\n    \n    if (features.indexOf('saveAsImage') !== -1) {\n        toolbox.feature.saveAsImage = { show: true, title: 'Save as PNG', pixelRatio: 2 };\n    }\n    \n    if (features.indexOf('dataView') !== -1) {\n        toolbox.feature.dataView = {\n            show: true,\n            title: 'Data View',\n            readOnly: true,\n            lang: ['Data View', 'Close', 'Refresh']\n        };\n    }\n    \n    if (features.indexOf('restore') !== -1) {\n        toolbox.feature.restore = { show: true, title: 'Restore' };\n    }\n    \n    return toolbox;\n}\n\nfunction renderSankey(sankeyData, settings) {\n    if (!chart || !sankeyData) return;\n    \n    var orient = settings.orient || 'horizontal';\n    var nodeWidth = settings.nodeWidth || 20;\n    var nodeGap = settings.nodeGap || 10;\n    var levelColors = settings.levelColors || '';\n    var linkOpacity = settings.linkOpacity || 0.4;\n    var linkColorMode = settings.linkColorMode || 'gradient';\n    var labelPosition = settings.labelPosition || 'right';\n    var showTooltip = settings.showTooltip !== false;\n    var valueDecimals = settings.valueDecimals !== undefined ? settings.valueDecimals : 2;\n    \n    // Legend settings\n    var showLegend = settings.showLegend !== false;\n    \n    // Toolbox settings\n    var showToolbox = settings.showToolbox !== false;\n    \n    if (sankeyData.nodes.length === 0 || sankeyData.links.length === 0) {\n        chart.setOption({\n            title: { text: 'No valid Sankey data', left: 'center', top: 'middle' }\n        });\n        return;\n    }\n    \n    var colors = getLevelColors(levelColors);\n    \n    // Assign colors based on depth\n    var maxDepth = 0;\n    sankeyData.nodes.forEach(function(node) {\n        if (node.depth !== undefined && node.depth > maxDepth) {\n            maxDepth = node.depth;\n        }\n    });\n    \n    sankeyData.nodes.forEach(function(node, i) {\n        var depth = node.depth !== undefined ? node.depth : i;\n        node.itemStyle = { color: colors[depth % colors.length] };\n    });\n    \n    // Build levels configuration\n    var levels = [];\n    for (var i = 0; i <= maxDepth; i++) {\n        levels.push({\n            depth: i,\n            itemStyle: {\n                color: colors[i % colors.length]\n            },\n            lineStyle: {\n                color: linkColorMode === 'source' ? 'source' : (linkColorMode === 'target' ? 'target' : 'gradient'),\n                opacity: linkOpacity\n            }\n        });\n    }\n    \n    // Calculate margins based on legend and toolbox\n    var topMargin = 20;\n    var bottomMargin = 20;\n    var leftMargin = 50;\n    var rightMargin = 50;\n    \n    if (showToolbox) {\n        topMargin = 40;\n        rightMargin = 80;\n    }\n    \n    if (showLegend) {\n        var legendPosition = settings.legendPosition || 'bottom';\n        if (legendPosition === 'top') topMargin += 30;\n        else if (legendPosition === 'bottom') bottomMargin += 30;\n        else if (legendPosition === 'left') leftMargin += 80;\n        else if (legendPosition === 'right') rightMargin += 80;\n    }\n    \n    var option = {\n        tooltip: showTooltip ? {\n            trigger: 'item',\n            formatter: function(params) {\n                if (params.dataType === 'edge') {\n                    return params.data.source + ' \\u2192 ' + params.data.target + '<br/>Flow: ' + formatValue(params.data.value, valueDecimals);\n                } else {\n                    return params.data.name;\n                }\n            }\n        } : {},\n        legend: buildLegendConfig(settings),\n        toolbox: buildToolboxConfig(settings),\n        series: [{\n            type: 'sankey',\n            data: sankeyData.nodes,\n            links: sankeyData.links,\n            orient: orient,\n            nodeWidth: nodeWidth,\n            nodeGap: nodeGap,\n            layoutIterations: 32,\n            emphasis: {\n                focus: 'adjacency'\n            },\n            label: {\n                position: labelPosition,\n                fontSize: 11\n            },\n            lineStyle: {\n                color: linkColorMode === 'source' ? 'source' : (linkColorMode === 'target' ? 'target' : 'gradient'),\n                opacity: linkOpacity,\n                curveness: 0.5\n            },\n            levels: levels,\n            left: leftMargin,\n            right: rightMargin,\n            top: topMargin,\n            bottom: bottomMargin\n        }]\n    };\n    \n    chart.setOption(option, true);\n}\n\nself.onResize = function() {\n    if (chart) {\n        chart.resize();\n    }\n};\n\nself.onDestroy = function() {\n    if (chart) {\n        chart.dispose();\n        chart = null;\n    }\n};\n\nself.typeParameters = function() {\n    return {\n        previewWidth: '100%',\n        embedTitlePanel: true,\n        hasAdditionalLatestDataKeys: true,\n        defaultDataKeysFunction: function() {\n            return [\n                { name: 'source', label: 'Source', type: 'attribute' },\n                { name: 'target', label: 'Target', type: 'attribute' },\n                { name: 'value', label: 'Flow Value', type: 'attribute' }\n            ];\n        }\n    };\n};\n",
     "settingsSchema": {
       "schema": {
         "type": "object",
@@ -28,13 +28,19 @@
             "title": "Data Mode",
             "type": "string",
             "default": "manual",
-            "enum": ["manual", "relations"]
+            "enum": [
+              "manual",
+              "relations"
+            ]
           },
           "relationDirection": {
             "title": "Relation Direction",
             "type": "string",
             "default": "FROM",
-            "enum": ["FROM", "TO"]
+            "enum": [
+              "FROM",
+              "TO"
+            ]
           },
           "relationType": {
             "title": "Relation Type",
@@ -50,7 +56,10 @@
             "title": "Orientation",
             "type": "string",
             "default": "horizontal",
-            "enum": ["horizontal", "vertical"]
+            "enum": [
+              "horizontal",
+              "vertical"
+            ]
           },
           "nodeWidth": {
             "title": "Node Width (px)",
@@ -82,13 +91,21 @@
             "title": "Link Color Mode",
             "type": "string",
             "default": "gradient",
-            "enum": ["source", "target", "gradient"]
+            "enum": [
+              "source",
+              "target",
+              "gradient"
+            ]
           },
           "labelPosition": {
             "title": "Label Position",
             "type": "string",
             "default": "right",
-            "enum": ["left", "right", "inside"]
+            "enum": [
+              "left",
+              "right",
+              "inside"
+            ]
           },
           "valueDecimals": {
             "title": "Value Decimals",
@@ -111,13 +128,22 @@
             "title": "Legend Position",
             "type": "string",
             "default": "bottom",
-            "enum": ["top", "bottom", "left", "right"]
+            "enum": [
+              "top",
+              "bottom",
+              "left",
+              "right"
+            ]
           },
           "legendAlign": {
             "title": "Legend Alignment",
             "type": "string",
             "default": "center",
-            "enum": ["left", "center", "right"]
+            "enum": [
+              "left",
+              "center",
+              "right"
+            ]
           },
           "showToolbox": {
             "title": "Show Toolbox",
@@ -130,7 +156,10 @@
             "items": {
               "type": "string"
             },
-            "default": ["saveAsImage", "dataView"]
+            "default": [
+              "saveAsImage",
+              "dataView"
+            ]
           }
         },
         "required": []
@@ -142,8 +171,14 @@
             "type": "rc-select",
             "multiple": false,
             "items": [
-              { "value": "manual", "label": "Manual (source/target/value keys)" },
-              { "value": "relations", "label": "Entity Relations (load flows)" }
+              {
+                "value": "manual",
+                "label": "Manual (source/target/value keys)"
+              },
+              {
+                "value": "relations",
+                "label": "Entity Relations (load flows)"
+              }
             ]
           },
           {
@@ -152,8 +187,14 @@
             "multiple": false,
             "condition": "model.dataMode === 'relations'",
             "items": [
-              { "value": "FROM", "label": "From parent to children" },
-              { "value": "TO", "label": "From children to parent" }
+              {
+                "value": "FROM",
+                "label": "From parent to children"
+              },
+              {
+                "value": "TO",
+                "label": "From children to parent"
+              }
             ]
           },
           {
@@ -169,8 +210,14 @@
             "type": "rc-select",
             "multiple": false,
             "items": [
-              { "value": "horizontal", "label": "Horizontal (left to right)" },
-              { "value": "vertical", "label": "Vertical (top to bottom)" }
+              {
+                "value": "horizontal",
+                "label": "Horizontal (left to right)"
+              },
+              {
+                "value": "vertical",
+                "label": "Vertical (top to bottom)"
+              }
             ]
           },
           "nodeWidth",
@@ -182,9 +229,18 @@
             "type": "rc-select",
             "multiple": false,
             "items": [
-              { "value": "gradient", "label": "Gradient (source to target)" },
-              { "value": "source", "label": "Source node color" },
-              { "value": "target", "label": "Target node color" }
+              {
+                "value": "gradient",
+                "label": "Gradient (source to target)"
+              },
+              {
+                "value": "source",
+                "label": "Source node color"
+              },
+              {
+                "value": "target",
+                "label": "Target node color"
+              }
             ]
           },
           {
@@ -192,9 +248,18 @@
             "type": "rc-select",
             "multiple": false,
             "items": [
-              { "value": "left", "label": "Left" },
-              { "value": "right", "label": "Right" },
-              { "value": "inside", "label": "Inside node" }
+              {
+                "value": "left",
+                "label": "Left"
+              },
+              {
+                "value": "right",
+                "label": "Right"
+              },
+              {
+                "value": "inside",
+                "label": "Inside node"
+              }
             ]
           },
           "valueDecimals",
@@ -208,10 +273,22 @@
             "multiple": false,
             "condition": "model.showLegend === true",
             "items": [
-              { "value": "top", "label": "Top" },
-              { "value": "bottom", "label": "Bottom" },
-              { "value": "left", "label": "Left" },
-              { "value": "right", "label": "Right" }
+              {
+                "value": "top",
+                "label": "Top"
+              },
+              {
+                "value": "bottom",
+                "label": "Bottom"
+              },
+              {
+                "value": "left",
+                "label": "Left"
+              },
+              {
+                "value": "right",
+                "label": "Right"
+              }
             ]
           },
           {
@@ -220,9 +297,18 @@
             "multiple": false,
             "condition": "model.showLegend === true && (model.legendPosition === 'top' || model.legendPosition === 'bottom')",
             "items": [
-              { "value": "left", "label": "Left" },
-              { "value": "center", "label": "Center" },
-              { "value": "right", "label": "Right" }
+              {
+                "value": "left",
+                "label": "Left"
+              },
+              {
+                "value": "center",
+                "label": "Center"
+              },
+              {
+                "value": "right",
+                "label": "Right"
+              }
             ]
           }
         ],
@@ -234,9 +320,18 @@
             "multiple": true,
             "condition": "model.showToolbox === true",
             "items": [
-              { "value": "saveAsImage", "label": "Save as Image" },
-              { "value": "dataView", "label": "Data View" },
-              { "value": "restore", "label": "Restore" }
+              {
+                "value": "saveAsImage",
+                "label": "Save as Image"
+              },
+              {
+                "value": "dataView",
+                "label": "Data View"
+              },
+              {
+                "value": "restore",
+                "label": "Restore"
+              }
             ]
           }
         ]
@@ -258,7 +353,7 @@
     },
     "dataKeySettingsSchema": {},
     "latestDataKeySettingsSchema": {},
-    "defaultConfig": "{\"datasources\":[{\"type\":\"function\",\"name\":\"function\",\"dataKeys\":[{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Stage 1\",\"color\":\"#5470C6\",\"settings\":{},\"_hash\":0.1,\"funcBody\":\"return 1000;\",\"units\":\"\",\"decimals\":0},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Stage 2A\",\"color\":\"#91CC75\",\"settings\":{},\"_hash\":0.2,\"funcBody\":\"return 600;\",\"units\":\"\",\"decimals\":0},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Stage 2B\",\"color\":\"#FAC858\",\"settings\":{},\"_hash\":0.3,\"funcBody\":\"return 400;\",\"units\":\"\",\"decimals\":0},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Stage 3\",\"color\":\"#EE6666\",\"settings\":{},\"_hash\":0.4,\"funcBody\":\"return 800;\",\"units\":\"\",\"decimals\":0}]}],\"showTitle\":true,\"backgroundColor\":\"#fff\",\"color\":\"rgba(0, 0, 0, 0.87)\",\"padding\":\"8px\",\"settings\":{\"dataMode\":\"manual\",\"relationDirection\":\"FROM\",\"relationType\":\"Contains\",\"flowAttribute\":\"value\",\"orient\":\"horizontal\",\"nodeWidth\":20,\"nodeGap\":10,\"levelColors\":\"\",\"linkOpacity\":0.4,\"linkColorMode\":\"gradient\",\"labelPosition\":\"right\",\"valueDecimals\":2,\"showTooltip\":true,\"showLegend\":true,\"legendPosition\":\"bottom\",\"legendAlign\":\"center\",\"showToolbox\":true,\"toolboxFeatures\":[\"saveAsImage\",\"dataView\"]},\"title\":\"Sankey Diagram with Levels\",\"dropShadow\":true,\"enableFullscreen\":true}"
+    "defaultConfig": "{\"datasources\":[{\"type\":\"function\",\"name\":\"function\",\"dataKeys\":[{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Stage 1\",\"color\":\"#5470C6\",\"settings\":{},\"_hash\":0.1,\"funcBody\":\"return 1000;\",\"units\":\"\",\"decimals\":0},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Stage 2A\",\"color\":\"#91CC75\",\"settings\":{},\"_hash\":0.2,\"funcBody\":\"return 600;\",\"units\":\"\",\"decimals\":0},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Stage 2B\",\"color\":\"#FAC858\",\"settings\":{},\"_hash\":0.3,\"funcBody\":\"return 400;\",\"units\":\"\",\"decimals\":0},{\"name\":\"f(x)\",\"type\":\"function\",\"label\":\"Stage 3\",\"color\":\"#EE6666\",\"settings\":{},\"_hash\":0.4,\"funcBody\":\"return 800;\",\"units\":\"\",\"decimals\":0}]}],\"showTitle\":true,\"backgroundColor\":\"#fff\",\"color\":\"rgba(0, 0, 0, 0.87)\",\"padding\":\"8px\",\"settings\":{\"dataMode\":\"manual\",\"relationDirection\":\"FROM\",\"relationType\":\"Contains\",\"flowAttribute\":\"value\",\"orient\":\"horizontal\",\"nodeWidth\":20,\"nodeGap\":10,\"levelColors\":\"\",\"linkOpacity\":0.4,\"linkColorMode\":\"gradient\",\"labelPosition\":\"right\",\"valueDecimals\":2,\"showTooltip\":true,\"showLegend\":true,\"legendPosition\":\"bottom\",\"legendAlign\":\"center\",\"showToolbox\":true,\"toolboxFeatures\":[\"saveAsImage\",\"dataView\"]},\"title\":\"Sankey Diagram with Levels\",\"dropShadow\":true,\"enableFullscreen\":true,\"hasAdditionalLatestDataKeys\":true}"
   },
   "tags": [
     "chart",

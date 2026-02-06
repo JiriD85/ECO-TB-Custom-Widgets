@@ -15,6 +15,6 @@
   "description": "Custom widgets for ECO Smart Diagnostics - includes Load Duration Curve chart and Synchronized Zoom Time Series",
   "order": 0,
   "externalId": null,
-  "version": 145,
+  "version": 161,
   "name": "ECO Custom Widgets"
 }
