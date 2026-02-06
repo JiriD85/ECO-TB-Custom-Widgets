@@ -888,7 +888,9 @@
                 mean: { label: 'Mean', icon: 'μ', value: stats.mean },
                 median: { label: 'Median', icon: '~', value: stats.median },
                 sum: { label: 'Sum', icon: 'Σ', value: stats.sum },
-                count: { label: 'Count', icon: 'n', value: stats.count }
+                count: { label: 'Count', icon: 'n', value: stats.count },
+                baseload: { label: 'Baseload', icon: '', value: stats.baseload },
+                peak: { label: 'Peakload', icon: '', value: stats.peak }
             };
 
             legendValues.forEach(function(val) {
@@ -901,7 +903,7 @@
 
                     var labelEl = document.createElement('div');
                     labelEl.style.cssText = 'font-size: 9px; opacity: 0.85;';
-                    labelEl.textContent = def.icon + ' ' + def.label;
+                    labelEl.textContent = def.icon ? (def.icon + ' ' + def.label) : def.label;
                     statBox.appendChild(labelEl);
 
                     var valueEl = document.createElement('div');
@@ -1074,7 +1076,7 @@
     // ========================================
     // Version Info
     // ========================================
-    ECOWidgetUtils.version = '1.5.0';
+    ECOWidgetUtils.version = '1.6.0';
 
     // Export to global scope
     global.ECOWidgetUtils = ECOWidgetUtils;
