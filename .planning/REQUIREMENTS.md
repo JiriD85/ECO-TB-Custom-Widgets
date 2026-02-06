@@ -19,7 +19,7 @@ Requirements for current milestone. Organized by widget capability.
 
 ### Platform Integration (Active)
 
-- [ ] **PLAT-01**: All widgets use card-level buttons (export, fullscreen) not ECharts toolbox
+- [ ] **PLAT-01**: All widgets use card-level buttons (export, fullscreen) alongside ECharts toolbox (both available)
 - [ ] **PLAT-02**: All widgets use color picker (`type: "color"`) for color settings
 - [ ] **PLAT-03**: All widgets leverage platform aggregation (not custom aggregation)
 
