@@ -995,31 +995,20 @@
 
             format = format || 'D MMM YYYY';
 
-            // Use placeholders to avoid partial replacements
-            // Order matters: MMMM before MMM to avoid partial match
-            var result = format
-                .replace('YYYY', '{{YYYY}}')
-                .replace('YY', '{{YY}}')
-                .replace('MMMM', '{{MMMM}}')
-                .replace('MMM', '{{MMM}}')
-                .replace('MM', '{{MM}}')
-                .replace('DD', '{{DD}}');
-
-            // Now replace single D and M (only if not already replaced as DD/MM/MMM/MMMM)
-            result = result
-                .replace(/D(?!D|\})/g, '{{D}}')
-                .replace(/M(?!M|\})/g, '{{M}}');
-
-            // Fill in actual values
-            return result
-                .replace('{{YYYY}}', d.getFullYear())
-                .replace('{{YY}}', String(d.getFullYear()).slice(-2))
-                .replace('{{MMMM}}', monthsFull[d.getMonth()])
-                .replace('{{MMM}}', monthsShort[d.getMonth()])
-                .replace('{{MM}}', String(d.getMonth() + 1).padStart(2, '0'))
-                .replace('{{M}}', String(d.getMonth() + 1))
-                .replace('{{DD}}', String(d.getDate()).padStart(2, '0'))
-                .replace('{{D}}', String(d.getDate()));
+            // Regex-based token replacement (longest tokens first to avoid partial matches)
+            var tokens = {
+                'YYYY': d.getFullYear(),
+                'YY': String(d.getFullYear()).slice(-2),
+                'MMMM': monthsFull[d.getMonth()],
+                'MMM': monthsShort[d.getMonth()],
+                'MM': String(d.getMonth() + 1).padStart(2, '0'),
+                'DD': String(d.getDate()).padStart(2, '0'),
+                'D': String(d.getDate()),
+                'M': String(d.getMonth() + 1)
+            };
+            return format.replace(/(YYYY|MMMM|MMM|MM|DD|YY|D|M)/g, function(match) {
+                return tokens[match] !== undefined ? tokens[match] : match;
+            });
         }
     };
 
